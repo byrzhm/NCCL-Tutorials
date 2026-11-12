@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NCCL Symmetric ReduceScatter · 通信 / 计算过程演示</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#131923; --panel2:#19212e; --line:#263043;
+    --text:#e6edf3; --muted:#8b949e; --accent:#76b900; --amber:#f2a541; --blue:#58a6ff;
+    --mono:"JetBrains Mono","SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--text);
+    font-family:Inter,system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}
+  header{display:flex;align-items:baseline;gap:18px;padding:16px 24px 6px;flex-wrap:wrap}
+  .brand{font-size:19px;font-weight:700;letter-spacing:.2px}
+  .brand .dot{display:inline-block;width:10px;height:10px;border-radius:2px;background:var(--accent);margin-right:8px;transform:translateY(-1px)}
+  .sub{color:var(--muted);font-size:12.5px}
+  .sub code{font-family:var(--mono);color:#c9d1d9}
+  nav{display:flex;gap:6px;padding:8px 24px 0;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+  nav button{background:transparent;border:1px solid transparent;border-bottom:none;color:var(--muted);
+    padding:9px 14px;font-size:13px;border-radius:8px 8px 0 0;cursor:pointer;font-family:inherit}
+  nav button:hover{color:var(--text)}
+  nav button.on{color:var(--text);background:var(--panel);border-color:var(--line);
+    box-shadow:inset 0 2px 0 var(--accent)}
+  main{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:0;min-height:calc(100vh - 110px)}
+  .stage{padding:12px 16px 16px 24px;display:flex;flex-direction:column;gap:10px;background:var(--panel)}
+  #sceneControls{display:flex;gap:16px;align-items:center;flex-wrap:wrap;font-size:12.5px;color:var(--muted);min-height:4px}
+  #sceneControls label{display:flex;gap:6px;align-items:center}
+  #sceneControls select,#sceneControls input[type=number]{background:var(--panel2);color:var(--text);
+    border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-family:inherit;font-size:12.5px}
+  #sceneControls input[type=number]{width:58px}
+  .svgwrap{background:#0b0f15;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  svg{display:block;width:100%;height:auto}
+  .controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .controls button{background:var(--panel2);border:1px solid var(--line);color:var(--text);
+    border-radius:8px;padding:7px 12px;font-size:13px;cursor:pointer;font-family:inherit;min-width:42px}
+  .controls button:hover{border-color:#3d4b63}
+  .controls button.primary{background:var(--accent);color:#0b0f15;border-color:var(--accent);font-weight:700;min-width:96px}
+  .progress{display:flex;gap:5px;align-items:center;margin:0 10px;flex-wrap:wrap}
+  .progress i{width:12px;height:12px;border-radius:50%;background:#2a3446;cursor:pointer;display:block}
+  .progress i.done{background:#4d6b2a}
+  .progress i.cur{background:var(--accent);box-shadow:0 0 0 3px rgba(118,185,0,.25)}
+  .controls label{color:var(--muted);font-size:12.5px;display:flex;align-items:center;gap:6px;margin-left:auto}
+  .controls .kbd{color:var(--muted);font-size:11.5px}
+  aside{border-left:1px solid var(--line);padding:18px 20px;overflow:auto;max-height:calc(100vh - 110px);position:sticky;top:0}
+  .stepno{font-family:var(--mono);font-size:12px;color:var(--accent);letter-spacing:.5px}
+  aside h2{font-size:17px;margin:6px 0 10px;line-height:1.4}
+  .desc{font-size:13.5px;line-height:1.75;color:#d0d7de}
+  .desc code{font-family:var(--mono);font-size:12px;background:#1f2836;padding:1px 5px;border-radius:4px;color:#e3b341}
+  .desc b{color:#fff}
+  .desc ul{padding-left:18px;margin:6px 0}
+  .desc li{margin:3px 0}
+  .codehdr{margin-top:16px;font-size:11.5px;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+  pre{background:#0b0f15;border:1px solid var(--line);border-radius:10px;padding:12px;font-family:var(--mono);
+    font-size:11.5px;line-height:1.6;color:#c9d1d9;white-space:pre-wrap;word-break:break-word;margin:6px 0 0}
+  #legend{margin-top:16px;font-size:12px;color:var(--muted);line-height:1.8}
+  #legend .sw{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:6px;transform:translateY(1px)}
+  @media (max-width:1100px){main{grid-template-columns:1fr} aside{max-height:none;border-left:none;border-top:1px solid var(--line)}}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot"></span>NCCL Symmetric ReduceScatter</div>
+  <div class="sub">kernel 通信 / 计算过程交互演示 · 源码 <code>src/device/symmetric/reduce_scatter.cuh</code>、<code>reduce_scatter_gin.cuh</code></div>
+</header>
+<nav id="tabs"></nav>
+<main>
+  <section class="stage">
+    <div id="sceneControls"></div>
+    <div class="svgwrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+    <div class="controls">
+      <button id="bReset" title="重置 (Home)">⏮</button>
+      <button id="bPrev" title="上一步 (←)">◀</button>
+      <button id="bPlay" class="primary" title="播放/暂停 (空格)">▶ 播放</button>
+      <button id="bNext" title="下一步 (→)">▶|</button>
+      <div class="progress" id="progress"></div>
+      <label>速度 <input type="range" id="speed" min="0.25" max="3" step="0.25" value="1"><span id="speedv">1×</span></label>
+    </div>
+  </section>
+  <aside>
+    <div class="stepno" id="stepno"></div>
+    <h2 id="stitle"></h2>
+    <div id="sdesc" class="desc"></div>
+    <div class="codehdr">对应源码（节选）</div>
+    <pre id="scode"></pre>
+    <div id="legend"></div>
+  </aside>
+</main>
+
+<script>
+"use strict";
+/* ============================== 基础工具 ============================== */
+const NS = "http://www.w3.org/2000/svg";
+const COL = { card:"#151c28", cardS:"#2a3446", text:"#e6edf3", muted:"#8b949e", dim:"#3a4558",
+  accent:"#76b900", amber:"#f2a541", blue:"#58a6ff", red:"#ef6b8a", violet:"#b48cff", band:"#101723", bandS:"#22314a" };
+const C4 = ["#58a6ff", "#f2a541", "#5cc98a", "#ef6b8a"];
+function c12(r){ const n = r >> 2, g = r & 3; const H = [212, 145, 28][n]; const Lt = [42, 53, 64, 75][g]; return `hsl(${H},72%,${Lt}%)`; }
+
+function E(tag, attrs, parent, text){
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) if (attrs[k] !== undefined && attrs[k] !== null) e.setAttribute(k, attrs[k]);
+  if (text !== undefined) e.textContent = text;
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function R(g, x, y, w, h, fill, o = {}){
+  return E("rect", { x, y, width: w, height: h, rx: o.rx ?? 6, fill: fill || "none",
+    stroke: o.stroke || "none", "stroke-width": o.sw || 1, opacity: o.op ?? 1,
+    "stroke-dasharray": o.dash || undefined }, g);
+}
+function T(g, x, y, txt, o = {}){
+  return E("text", { x, y, fill: o.fill || COL.text, "font-size": o.size || 12, "text-anchor": o.anchor || "start",
+    "font-weight": o.weight || 400, "font-family": o.mono ? "JetBrains Mono,SF Mono,Menlo,monospace" : undefined,
+    opacity: o.op ?? 1 }, g, txt);
+}
+function card(g, x, y, w, h, o = {}){ return R(g, x, y, w, h, COL.card, { stroke: o.stroke || COL.cardS, sw: o.sw || 1, rx: 10 }); }
+function stripes(g, x, y, w, h, colors){
+  const n = colors.length; const sw = w / n;
+  colors.forEach((c, i) => R(g, x + i * sw, y, sw + 0.4, h, c, { rx: 0 }));
+  R(g, x, y, w, h, "none", { stroke: "#ffffff55", rx: 3 });
+}
+function emptyBox(g, x, y, w, h, label){
+  R(g, x, y, w, h, "none", { stroke: COL.dim, dash: "4 3", rx: 5 });
+  if (label) T(g, x + w / 2, y + h / 2 + 4, label, { anchor: "middle", size: 10.5, fill: COL.muted });
+}
+function pill(g, x, y, w, h, text, color){
+  R(g, x, y, w, h, color + "22", { stroke: color, rx: h / 2 });
+  T(g, x + w / 2, y + h / 2 + 4, text, { anchor: "middle", size: 10.5, fill: color, weight: 600 });
+}
+
+/* 路径：统一为折线点集（贝塞尔先采样） */
+function cubic(p0, c1, c2, p3, n = 36){
+  const pts = [];
+  for (let i = 0; i <= n; i++){ const t = i / n, u = 1 - t;
+    pts.push([u*u*u*p0[0] + 3*u*u*t*c1[0] + 3*u*t*t*c2[0] + t*t*t*p3[0],
+              u*u*u*p0[1] + 3*u*u*t*c1[1] + 3*u*t*t*c2[1] + t*t*t*p3[1]]); }
+  return pts;
+}
+const arc   = (p0, p3, top) => cubic(p0, [p0[0], top], [p3[0], top], p3);
+const hcurve= (p0, p3) => { const mx = (p0[0] + p3[0]) / 2; return cubic(p0, [mx, p0[1]], [mx, p3[1]], p3); };
+const vcurve= (p0, p3) => { const my = (p0[1] + p3[1]) / 2; return cubic(p0, [p0[0], my], [p3[0], my], p3); };
+const flow  = (pts, color, o = {}) => Object.assign({ pts, color }, o);
+
+function prepFlow(f){
+  if (f._d) return;
+  const cum = [0];
+  for (let i = 1; i < f.pts.length; i++){ const a = f.pts[i - 1], b = f.pts[i]; cum.push(cum[i - 1] + Math.hypot(b[0] - a[0], b[1] - a[1])); }
+  f._cum = cum; f._len = cum[cum.length - 1] || 1;
+  f._d = "M" + f.pts.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L");
+}
+function posAt(f, u){
+  const L = u * f._len, c = f._cum;
+  let i = 1; while (i < c.length - 1 && c[i] < L) i++;
+  const a = f.pts[i - 1], b = f.pts[i]; const seg = (c[i] - c[i - 1]) || 1; const k = Math.max(0, Math.min(1, (L - c[i - 1]) / seg));
+  return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+}
+const ease = u => u < .5 ? 2 * u * u : 1 - Math.pow(-2 * u + 2, 2) / 2;
+
+function mkFlowEls(ov, f){
+  prepFlow(f);
+  const w = f.w || (f.thin ? 1 : 2.2);
+  const path = E("path", { d: f._d, fill: "none", stroke: f.color, "stroke-width": w, "stroke-linecap": "round",
+    "stroke-linejoin": "round", "stroke-dasharray": f.dash || `${f._len} ${f._len}`, "stroke-dashoffset": f.dash ? 0 : f._len }, ov);
+  const end = E("circle", { r: f.thin ? 1.8 : 3.2, fill: f.color, opacity: 0 }, ov);
+  const [ex, ey] = f.pts[f.pts.length - 1]; end.setAttribute("cx", ex); end.setAttribute("cy", ey);
+  const pk = E("circle", { r: f.r || (f.thin ? 2.6 : 5.5), fill: f.color, stroke: "#fff", "stroke-width": f.thin ? .5 : 1.4, opacity: 0 }, ov);
+  let lab = null;
+  if (f.label){
+    const [lx, ly] = posAt(f, f.labelAt ?? .5);
+    lab = E("g", { opacity: 0 }, ov);
+    const tw = f.label.length * 6.4 + 12;
+    R(lab, lx - tw / 2 + (f.labelDx || 0), ly - 22 + (f.labelDy || 0), tw, 17, "#0b0f15", { stroke: f.color, rx: 4, op: .92 });
+    T(lab, lx + (f.labelDx || 0), ly - 10 + (f.labelDy || 0), f.label, { anchor: "middle", size: 10.5, fill: f.color, weight: 600 });
+  }
+  return { path, pk, end, lab };
+}
+function updFlow(f, el, p, final){
+  const d = f.delay || 0;
+  const u = final ? 1 : ease(Math.max(0, Math.min(1, (p - d) / (1 - d))));
+  el.path.setAttribute("stroke-opacity", f.thin ? .28 : (final ? .55 : .7));
+  if (!f.dash) el.path.setAttribute("stroke-dashoffset", f._len * (1 - u));
+  if (final){ el.pk.setAttribute("opacity", 0); el.end.setAttribute("opacity", f.thin ? .5 : .9); }
+  else { const [x, y] = posAt(f, u); el.pk.setAttribute("cx", x); el.pk.setAttribute("cy", y); el.pk.setAttribute("opacity", u <= 0 || u >= 1 ? (u >= 1 ? .9 : 0) : 1); }
+  if (el.lab) el.lab.setAttribute("opacity", final ? .95 : Math.min(1, u * 3));
+}
+
+/* ============================== 场景 1：单机 LD ============================== */
+const sLD = {
+  id: "ld", tab: "① 单机 LD（拉取式）", vb: [1100, 640],
+  layout(){
+    const G = [];
+    for (let i = 0; i < 4; i++){
+      const x = 40 + i * 262, y = 150;
+      G.push({ x, y, w: 240, h: 252,
+        cell: k => ({ x: x + 14 + k * 54, y: y + 52, w: 48, h: 34 }),
+        bar: { x: x + 14, y: y + 100, w: 212, h: 22 },
+        sq: k => ({ x: x + 14 + k * 38, y: y + 154, w: 30, h: 30 }),
+        out: { x: x + 14, y: y + 212, w: 212, h: 28 } });
+    }
+    return { G };
+  },
+  init(){ return { bar: ["", "", "", ""], acc: [[], [], [], []], out: [null, null, null, null] }; },
+  draw(svg, s, L){
+    T(svg, 40, 38, "ReduceScatter_LD：每个 rank 用 NVLink 直接 load 所有 peer 输入中“属于自己的那一段”，在寄存器里规约后只写本地", { size: 15, weight: 700 });
+    T(svg, 40, 62, "nRanks = 4；out_r = Σ_i in_i[seg r]；peer 访问顺序 r → r+1 → r+2 → …（ring 错开，同一时刻每张卡只被一个 rank 读）", { size: 12.5, fill: COL.muted });
+    R(svg, 28, 124, 1044, 296, COL.band, { stroke: COL.bandS, dash: "5 4", rx: 14 });
+    T(svg, 1062, 412, "NVLink / NVSwitch（LSA 域）：任意两卡可直接 P2P load/store", { anchor: "end", size: 11, fill: COL.muted });
+    L.G.forEach((g, i) => {
+      card(svg, g.x, g.y, g.w, g.h);
+      T(svg, g.x + 14, g.y + 26, `GPU ${i}`, { size: 16, weight: 700, fill: C4[i] });
+      T(svg, g.x + 80, g.y + 26, `rank ${i} · 负责 seg ${i}`, { size: 11.5, fill: COL.muted });
+      T(svg, g.x + 14, g.y + 46, "input（symmetric window）", { size: 10.5, fill: COL.muted });
+      for (let k = 0; k < 4; k++){ const c = g.cell(k);
+        R(svg, c.x, c.y, c.w, c.h, C4[i], { op: .88, rx: 4 });
+        T(svg, c.x + c.w / 2, c.y + 22, `seg${k}`, { anchor: "middle", size: 11, fill: "#0b0f15", weight: 700 }); }
+      const B = { "": ["LSA barrier：—", COL.dim], arrived: ["bar.arrive ✓（relaxed）", COL.amber],
+        passed: ["bar.wait ✓（acquire）", COL.accent], end: ["bar.sync ✓ 可安全返回", COL.blue] }[s.bar[i]];
+      pill(svg, g.bar.x, g.bar.y, g.bar.w, g.bar.h, B[0], B[1] === COL.dim ? "#6e7681" : B[1]);
+      T(svg, g.x + 14, g.y + 148, "acc（寄存器）· 已累加的来源 rank", { size: 10.5, fill: COL.muted });
+      for (let k = 0; k < 4; k++){ const q = g.sq(k); const has = s.acc[i].includes(k);
+        if (has) R(svg, q.x, q.y, q.w, q.h, C4[k], { rx: 4 }); else emptyBox(svg, q.x, q.y, q.w, q.h);
+        T(svg, q.x + q.w / 2, q.y + 19, `r${k}`, { anchor: "middle", size: 10, fill: has ? "#0b0f15" : COL.muted, weight: 700 }); }
+      T(svg, g.x + 14, g.y + 206, "out（本地 HBM）", { size: 10.5, fill: COL.muted });
+      if (s.out[i]){ stripes(svg, g.out.x, g.out.y, g.out.w, g.out.h, s.out[i].map(k => C4[k]));
+        T(svg, g.out.x + g.out.w / 2, g.out.y + 19, `Σ seg${i} 完成`, { anchor: "middle", size: 11.5, fill: "#0b0f15", weight: 700 }); }
+      else emptyBox(svg, g.out.x, g.out.y, g.out.w, g.out.h, "—");
+    });
+    tilingFigure(svg, 40, 452);
+  },
+  steps: [
+    { title: "初始状态：输入布局与语义",
+      desc: `每张卡的 input 有 <b>nRanks 段</b>，rank r 只需要所有卡 <b>seg r</b> 的规约结果。<br>
+      输入在 symmetric window 中注册过，所以在<b>同一偏移</b>上可以用 <code>peerPtr(world, r)</code> 直接访问 peer 显存，不经过 proxy 或 FIFO。<br>
+      LD 是<b>拉取式</b>：每个 rank 自己去读 peer 的 seg r，只在本地写一次 out。NVLink 上全是读流量。<br>
+      下方小图是一段 seg 内部的切分方式和 warp 映射。`,
+      code: `// ncclSymkRun_ReduceScatter_LD_impl
+handler.forEachWork<T>([&](int block, int nBlocks, size_t nElts,
+                           size_t nAllElts, ncclSymPtr<T> input, ncclSymPtr<T> output) {
+  int t  = flattenIx(lane, 32, block, nBlocks, warp, nWarps);
+  int tn = nBlocks * blockDim.x;
+  reduce<...>(handler, tn, t, nBlocks, waitNeeded, bar, red,
+              input + rank * nAllElts,   // 只处理属于本 rank 的 seg
+              output, nElts);
+});` },
+    { title: "① 所有 block：bar.arrive（relaxed）",
+      desc: `kernel 一开头先 <code>bar.arrive</code>，只对外宣告“我的输入已经可以被读”，<b>不等待</b>其他卡。真正的 wait 推迟到读 peer 之前再做。`,
+      code: `ncclLsaBarrierSession<ncclCoopCta> bar{cta, comm, ncclTeamTagLsa(), blockIdx.x};
+bar.arrive(ncclCoopCta(), cuda::memory_order_relaxed);
+bool waitNeeded = !EnableProfiler;`,
+      commit(s){ s.bar = s.bar.map(() => "arrived"); } },
+    { title: "② barrier 之前：先预取本地 seg r 到 acc0",
+      desc: `在等待 peer 就绪之前，先把<b>本地</b>输入读进寄存器 <code>acc0</code>，用这段时间掩盖 barrier 的同步延迟。`,
+      code: `nIters -= w;
+if (0 < nIters) {
+  for (int u = 0; u < UnrollPacks; u++)
+    acc0[u] = inpPacks.peerPtr(world, rank)[u * WARP_SIZE];   // 本地
+}
+if (waitNeeded) bar.wait(ncclCoopCta(), cuda::memory_order_acquire);`,
+      flows: (s, L) => [0, 1, 2, 3].map(i => { const c = L.G[i].cell(i), q = L.G[i].sq(i);
+        return flow(cubic([c.x + c.w / 2, c.y + c.h], [c.x + c.w / 2, c.y + 60], [q.x + q.w / 2, q.y - 40], [q.x + q.w / 2, q.y]), C4[i]); }),
+      commit(s){ for (let i = 0; i < 4; i++) s.acc[i] = [i]; } },
+    { title: "③ bar.wait（acquire）：所有 peer 输入就绪",
+      desc: `<code>bar.wait(acquire)</code> 确认所有 peer 都已经 arrive。acquire 语义保证之后读到的是 peer 写好的数据。<br><code>waitNeeded</code> 保证整个 kernel 只 wait 一次，后续各档处理都不再等待。`,
+      code: `if (waitNeeded) bar.wait(ncclCoopCta(), cuda::memory_order_acquire);
+...
+waitNeeded = false;`,
+      commit(s){ s.bar = s.bar.map(() => "passed"); } },
+    { title: "④ 读 peer r+1：acc1 = acc0 ⊕ tmp1",
+      desc: `从 <code>r = rank + 1</code> 开始访问 peer：GPU0 读 GPU1，GPU1 读 GPU2…… 同一时刻每张卡只有一个读者，没有热点。<br>
+      累加类型 <code>Acc</code> 可以比 <code>T</code> 宽（<code>ncclSymkAccumType</code>），每次读到的数据先 <code>applyCast&lt;T,Acc&gt;</code> 再规约。`,
+      code: `int r = rank + 1; if (r == nRanks) r = 0;
+for (int u = 0; u < UnrollPacks; u++)
+  tmp1[u] = inpPacks.peerPtr(world, r)[u * WARP_SIZE];   // NVLink load
+for (int u = 0; u < UnrollPacks; u++)
+  acc1[u] = applyReduce(red, applyCast<T,Acc>(acc0[u]),
+                             applyCast<T,Acc>(tmp1[u]));`,
+      flows: (s, L) => [0, 1, 2, 3].map(i => { const src = (i + 1) % 4; const c = L.G[src].cell(i), q = L.G[i].sq(src);
+        const p0 = [c.x + c.w / 2, c.y], p3 = [q.x + q.w / 2, q.y]; return flow(arc(p0, p3, 132 - Math.abs(p3[0] - p0[0]) / 14), C4[src], { delay: i * .04 }); }),
+      commit(s){ for (let i = 0; i < 4; i++) s.acc[i].push((i + 1) % 4); } },
+    { title: "⑤ 剩余 peer 按 UnrollPeers = 2 一批：r+2、r+3",
+      desc: `剩下的 peer 两个一批：<b>先连续发出两个 peer 的 load</b>，增加在途访存数来掩盖 NVLink 延迟，<b>然后统一规约</b>。<br>
+      peer 数不能整除时，由 <code>partial</code> 分支处理尾部。nRanks = 4 时正好是一个完整批次（dr = 2）。`,
+      code: `int dr = 2;
+for (int partial = 0; partial <= 1; partial++)
+  for (...; dr + UnrollPeers <= nRanks; dr += UnrollPeers) {
+    Pack tmp1[UnrollPeers][UnrollPacks];
+    for (int ur = 0; ur < UnrollPeers - partial; ur++) {
+      for (int u ...) tmp1[ur][u] = inpPacks.peerPtr(world, r)[u * WARP_SIZE];
+      r += 1; if (r == nRanks) r = 0;
+    }
+    for (int ur ...) for (int u ...)
+      acc1[u] = applyReduce(red, acc1[u], applyCast<T,Acc>(tmp1[ur][u]));
+  }`,
+      flows: (s, L) => { const out = []; for (let i = 0; i < 4; i++) for (const d of [2, 3]){ const src = (i + d) % 4;
+        const c = L.G[src].cell(i), q = L.G[i].sq(src); const p0 = [c.x + c.w / 2, c.y], p3 = [q.x + q.w / 2, q.y];
+        out.push(flow(arc(p0, p3, 136 - Math.abs(p3[0] - p0[0]) / 11 - (d - 2) * 6), C4[src], { delay: (d - 2) * .12 + i * .03 })); } return out; },
+      commit(s){ for (let i = 0; i < 4; i++) s.acc[i].push((i + 2) % 4, (i + 3) % 4); } },
+    { title: "⑥ postOp → cast<T> → 只写本地 out",
+      desc: `<code>applyPostOp</code>（例如 SumPostDiv 的除法）之后 <code>applyCast&lt;Acc,T&gt;</code>，<b>只写本地</b> out。<br>
+      接着 <code>inpPacks += wn × tile</code> 进入下一个 tile，并把下一轮的本地 acc0 预取好（软件流水）。`,
+      code: `for (int u ...) acc1[u] = applyPostOp(red, acc1[u]);
+for (int u ...) acc0[u] = applyCast<Acc,T>(acc1[u]);
+for (int u ...) outPacks.localPtr()[u * WARP_SIZE] = acc0[u];   // 本地 store
+inpPacks += intptr_t(wn) * UnrollPacks * WARP_SIZE;
+outPacks += intptr_t(wn) * UnrollPacks * WARP_SIZE;
+nIters -= wn;
+// 预取下一轮本地数据
+for (int u ...) acc0[u] = inpPacks.peerPtr(world, rank)[u * WARP_SIZE];`,
+      flows: (s, L) => [0, 1, 2, 3].map(i => { const g = L.G[i]; const q0 = g.sq(0), q3 = g.sq(3);
+        const p0 = [(q0.x + q3.x + q3.w) / 2, q0.y + q0.h]; return flow(vcurve(p0, [g.out.x + g.out.w / 2, g.out.y]), COL.accent); }),
+      commit(s){ for (let i = 0; i < 4; i++) s.out[i] = s.acc[i].slice().sort(); } },
+    { title: "⑦ bar.sync：确认 peer 都读完了我的输入",
+      desc: `结尾的 <code>bar.sync</code> 保证<b>所有 peer 都已读完本卡的 input</b>，kernel 才返回。否则用户可能在 peer 还在读的时候改写 sendbuff。<br>
+      至此每张卡的 out 都是 4 个 rank 对应段的规约结果。`,
+      code: `if NCCL_IF_CONSTEXPR (EnableProfiler) ncclSymkProfilerPhase(args, ..._BEFORE_CLOSE);
+bar.sync(ncclCoopCta(), cuda::memory_order_relaxed);`,
+      commit(s){ s.bar = s.bar.map(() => "end"); } },
+  ],
+  legend: `<span class="sw" style="background:${C4[0]}"></span>GPU0 的数据 <span class="sw" style="background:${C4[1]};margin-left:10px"></span>GPU1
+  <span class="sw" style="background:${C4[2]};margin-left:10px"></span>GPU2 <span class="sw" style="background:${C4[3]};margin-left:10px"></span>GPU3<br>
+  移动的圆点 = 一次 NVLink load / 本地访存；彩色细线 = 上一步发生的数据流。`,
+};
+
+function tilingFigure(svg, x, y){
+  T(svg, x, y, "一段 seg 的内部切分（reduce()）：三档 pack 宽度 + warp 轮转映射　示例：nBlocks = 2、每 block 4 warp → 全局 wn = 8", { size: 13, weight: 600 });
+  const by = y + 16, h = 36; let cx = x;
+  const seg = (w, fill, label, color) => { R(svg, cx, by, w - 2, h, fill, { rx: 4 }); T(svg, cx + (w - 2) / 2, by + 23, label, { anchor: "middle", size: 10.5, fill: color || "#e6edf3", weight: 600 }); cx += w; };
+  const brace = (x0, x1, label, sub) => { E("path", { d: `M${x0} ${by + h + 6} v6 H${x1 - 2} v-6`, fill: "none", stroke: "#6e7681" }, svg);
+    T(svg, (x0 + x1) / 2, by + h + 26, label, { anchor: "middle", size: 10.5, fill: "#c9d1d9" });
+    if (sub) T(svg, (x0 + x1) / 2, by + h + 41, sub, { anchor: "middle", size: 10, fill: COL.muted }); };
+  const x0 = cx; seg(46, "#3a4252", "pre"); const x1 = cx;
+  for (let t = 0; t < 16; t++){ const g = t % 8; seg(44, `hsl(${222 - g * 12},38%,${33 + g * 2.5}%)`, `w${g}`); } const x2 = cx;
+  for (let t = 0; t < 4; t++) seg(42, `hsl(${190 - t * 10},30%,46%)`, `w${t}`); const x3 = cx;
+  seg(56, "#3a4252", "suffix"); const x4 = cx;
+  brace(x0, x1, "reduceEnds", "逐元素");
+  brace(x1, x2, "reduceDeep<16B, UnrollPacks=4(TMA:8), UnrollPeers=2>", "chunk = 4 warp × Unroll × 32 lane × 16B = 8KB（TMA 16KB），chunk 数截成 nRanks×nBlocks 的倍数");
+  brace(x2, x3, "reduceDeep<4B,4,4>", "4B 对齐时");
+  brace(x3, x4, "reduceEnds<8>", "尾部");
+  T(svg, x, by + h + 66, "全局 warp 号 g = warp × nBlocks + block（flattenIx 让 warp 在 block 间轮转），warp g 依次处理 tile g, g+wn, g+2wn …；lane l 访问 pack l + 32u（合并访存）", { size: 11, fill: COL.muted });
+}
+
+/* ============================== 场景 2：TmaLD 单 warp ============================== */
+const sTMA = {
+  id: "tma", tab: "② TmaLD（单 warp 视角）", vb: [1100, 560],
+  layout(){ return {
+    peer: k => ({ x: 40, y: 104 + k * 98, w: 230, h: 74 }),
+    smem: { x: 350, y: 110, w: 300, h: 300 },
+    b0: { x: 380, y: 160, w: 240, h: 60 }, b1: { x: 380, y: 250, w: 240, h: 60 }, mb: { x: 380, y: 340, w: 240, h: 26 },
+    reg: { x: 720, y: 120, w: 200, h: 200 }, out: { x: 950, y: 170, w: 120, h: 80 } }; },
+  init(){ return { b0: null, b1: null, acc: [], mb: "", lsa: "", out: false, fence: false }; },
+  draw(svg, s, L){
+    T(svg, 40, 38, "ReduceScatter_TmaLD（SM100+）：rank 1 中一个 warp 处理一个 tile 的完整过程", { size: 15, weight: 700 });
+    T(svg, 40, 62, "tile = UnrollPacks 8 × 32 lane × 16B = 4KB；lane0 发起 TMA bulk copy，mbarrier 按 tx 字节数判定完成；其余 31 个 lane 只做规约", { size: 12.5, fill: COL.muted });
+    for (let k = 0; k < 4; k++){ const p = L.peer(k);
+      card(svg, p.x, p.y, p.w, p.h, { stroke: k === 1 ? C4[1] : COL.cardS });
+      R(svg, p.x + 12, p.y + 30, 120, 30, C4[k], { rx: 4, op: .9 });
+      T(svg, p.x + 72, p.y + 50, "in[seg1] · tile", { anchor: "middle", size: 10.5, fill: "#0b0f15", weight: 700 });
+      T(svg, p.x + 12, p.y + 20, `GPU ${k}${k === 1 ? "（本地）" : "（peer，NVLink）"}`, { size: 12, weight: 600, fill: C4[k] });
+      T(svg, p.x + 142, p.y + 50, `peerPtr(world,${k})`, { size: 9.5, fill: COL.muted, mono: true }); }
+    const S = L.smem;
+    R(svg, S.x, S.y, S.w, S.h, "#121a28", { stroke: "#2f4366", rx: 12 });
+    T(svg, S.x + 14, S.y + 24, "shared memory（本 warp 独占的 scratch）", { size: 11.5, fill: "#9fb3d1", weight: 600 });
+    const buf = (b, v, name) => {
+      if (!v) emptyBox(svg, b.x, b.y, b.w, b.h, `${name}：空`);
+      else if (v === "res"){ stripes(svg, b.x, b.y, b.w, b.h, [1, 2, 3, 0].map(k => C4[k])); T(svg, b.x + b.w / 2, b.y + 36, `${name} = 规约结果（T 类型）`, { anchor: "middle", size: 11.5, fill: "#0b0f15", weight: 700 }); }
+      else { R(svg, b.x, b.y, b.w, b.h, C4[v.src], { rx: 5 }); T(svg, b.x + b.w / 2, b.y + 36, `${name} ← GPU${v.src} 的 tile`, { anchor: "middle", size: 12, fill: "#0b0f15", weight: 700 }); }
+    };
+    buf(L.b0, s.b0, "buff[0]"); buf(L.b1, s.b1, "buff[1]");
+    const MB = { "": ["mbarrier：idle", "#6e7681"], wait: ["mbarrier：arrive_tx + wait", COL.amber], done: ["mbarrier：tx 完成 ✓", COL.accent], fence: ["fence.proxy.async + __syncwarp", COL.violet] }[s.mb];
+    pill(svg, L.mb.x, L.mb.y, L.mb.w, L.mb.h, MB[0], MB[1]);
+    const G = L.reg;
+    card(svg, G.x, G.y, G.w, G.h);
+    T(svg, G.x + 12, G.y + 22, "寄存器（32 lanes）", { size: 11.5, weight: 600, fill: "#c9d1d9" });
+    for (let l = 0; l < 32; l++) R(svg, G.x + 12 + l * 5.5, G.y + 34, 4, 46, l === 0 ? COL.accent : "#2f3b50", { rx: 1.5 });
+    T(svg, G.x + 12, G.y + 96, "lane0 = TMA 发起者", { size: 10, fill: COL.accent });
+    T(svg, G.x + 12, G.y + 124, "acc1 已累加的来源", { size: 10.5, fill: COL.muted });
+    for (let k = 0; k < 4; k++){ const has = s.acc.includes(k); const x = G.x + 12 + k * 40, y = G.y + 134;
+      if (has) R(svg, x, y, 32, 32, C4[k], { rx: 4 }); else emptyBox(svg, x, y, 32, 32);
+      T(svg, x + 16, y + 21, `r${k}`, { anchor: "middle", size: 10.5, fill: has ? "#0b0f15" : COL.muted, weight: 700 }); }
+    const O = L.out;
+    T(svg, O.x, O.y - 10, "GPU1 out（本地 HBM）", { size: 11, fill: COL.muted });
+    if (s.out){ stripes(svg, O.x, O.y, O.w, O.h, [1, 2, 3, 0].map(k => C4[k])); T(svg, O.x + O.w / 2, O.y + 45, "Σ seg1 tile", { anchor: "middle", size: 12, fill: "#0b0f15", weight: 700 }); }
+    else emptyBox(svg, O.x, O.y, O.w, O.h, "—");
+    const LS = { "": ["LSA barrier：arrive 已发", "#6e7681"], passed: ["LSA barrier：wait ✓", COL.accent] }[s.lsa];
+    pill(svg, 720, 345, 200, 24, LS[0], LS[1]);
+    T(svg, 40, 520, "TMA 版本的意义：由 lane0 一条 bulk copy 指令搬运整个 4KB tile，取代 32 个 lane 各自发 LSU load。指令数和寄存器压力都下降，换来更深的展开（UnrollPacks 8）。", { size: 11.5, fill: COL.muted });
+    T(svg, 40, 540, "条件：comm->minCompCap ≥ 100，shared memory 能容纳 16 warp × ncclTmaShmemScratchWarpSize()，且输入 16B 对齐（ncclSymkTmaAvailable / symAligned16B）。", { size: 11.5, fill: COL.muted });
+  },
+  steps: [
+    { title: "初始状态：一个 warp、一个 tile",
+      desc: `场景：rank = 1、nRanks = 4。一个 warp 负责 seg1 中某个 4KB tile，要把 GPU0~3 上同一位置的 tile 规约后写到本地 out。<br>
+      shared memory 中每个 warp 有独立的 <code>tmaSmemStruct</code>：<code>buff[UnrollPeers]</code> 加一个 <code>mbarrier</code>。`,
+      code: `using tmaSmemStruct_t = tmaSmemStruct<Pack, UnrollPacks, UnrollPeers>;
+tmaSmemStruct_t* tmaSmem = reinterpret_cast<tmaSmemStruct_t*>(
+    smemScratch + lw * ncclTmaShmemScratchWarpSize());
+constexpr size_t tileSize = UnrollPacks * WARP_SIZE * BytePerPack; // 8*32*16 = 4KB
+if (lane == 0) init(&tmaSmem->bar, WARP_SIZE);` },
+    { title: "① barrier 之前：lane0 发起本地 tile → buff[0]",
+      desc: `与普通 LD 相同，<b>本地 tile 的预取放在 barrier wait 之前</b>。<br>区别是这里由 lane0 发起 <code>memcpy_async_tx</code>（TMA bulk copy），记下 <code>tmaSize += tileSize</code>，等稍后统一 arrive_tx 时再计数。`,
+      code: `if (lane == 0) {
+  cuda::device::memcpy_async_tx(tmaSmem->buff[0], inpPacks.peerPtr(world, rank),
+                                cuda::aligned_size_t<16>(tileSize), tmaSmem->bar);
+  tmaSize += tileSize;
+}
+if (waitNeeded) bar.wait(ncclCoopCta(), cuda::memory_order_acquire);`,
+      flows: (s, L) => { const p = L.peer(1); return [flow(hcurve([p.x + p.w, p.y + 45], [L.b0.x, L.b0.y + 30]), C4[1], { label: "TMA bulk copy" })]; },
+      commit(s){ s.b0 = { src: 1 }; } },
+    { title: "② LSA barrier wait（acquire）",
+      desc: `等待所有 peer 的输入就绪。<b>此时本地 tile 的 TMA 可能还在传输</b>，和 barrier 的等待重叠进行。`,
+      code: `if (waitNeeded) bar.wait(ncclCoopCta(), cuda::memory_order_acquire);`,
+      commit(s){ s.lsa = "passed"; } },
+    { title: "③ lane0：peer(rank+1 = 2) 的 tile → buff[1]，然后 arrive_tx + wait",
+      desc: `lane0 再发一个 bulk copy，从 GPU2 拉取 tile。随后 <code>barrier_arrive_tx(bar, 1, tmaSize)</code> 声明这一轮总共期待多少字节，全 warp 在 mbarrier 上等待，<b>直到两个 tile 的字节都到齐</b>。`,
+      code: `if (lane == 0) {
+  cuda::device::memcpy_async_tx(tmaSmem->buff[1], inpPacks.peerPtr(world, r),
+                                cuda::aligned_size_t<16>(tileSize), tmaSmem->bar);
+  tmaSize += tileSize;
+}
+auto token = cuda::device::barrier_arrive_tx(tmaSmem->bar, 1, tmaSize);
+tmaSmem->bar.wait(std::move(token));
+tmaSize = 0;`,
+      flows: (s, L) => { const p = L.peer(2); return [flow(hcurve([p.x + p.w, p.y + 45], [L.b1.x, L.b1.y + 30]), C4[2], { label: "NVLink → smem" })]; },
+      commit(s){ s.b1 = { src: 2 }; s.mb = "done"; } },
+    { title: "④ 全体 lane：smem → 寄存器，acc1 = buff[0] ⊕ buff[1]",
+      desc: `每个 lane 读取 <code>buff[k][lane + 32u]</code>，在寄存器中完成第一次规约。shared memory 的读取同样按 lane 合并。`,
+      code: `for (int u = 0; u < UnrollPacks; u++) {
+  acc0[u] = tmaSmem->buff[0][lane + WARP_SIZE * u];
+  tmp1[u] = tmaSmem->buff[1][lane + WARP_SIZE * u];
+  acc1[u] = applyReduce(red, applyCast<T,Acc>(acc0[u]), applyCast<T,Acc>(tmp1[u]));
+}`,
+      flows: (s, L) => [flow(hcurve([L.b0.x + L.b0.w, L.b0.y + 30], [L.reg.x, L.reg.y + 60]), C4[1]), flow(hcurve([L.b1.x + L.b1.w, L.b1.y + 30], [L.reg.x, L.reg.y + 80]), C4[2], { delay: .1 })],
+      commit(s){ s.acc = [1, 2]; s.mb = ""; } },
+    { title: "⑤ __syncwarp 后，lane0 一次发出两个 peer：3 → buff[0]，0 → buff[1]",
+      desc: `<code>__syncwarp()</code> 确保所有 lane 都读完了 smem，lane0 才能覆写。<br>
+      UnrollPeers = 2，两个 bulk copy 一起发出，<b>一次 mbarrier wait 等两份数据</b>。`,
+      code: `__syncwarp();   // lane0 等全 warp 读完 smem
+for (int ur = 0; ur < UnrollPeers - partial; ur++) {
+  if (lane == 0) {
+    cuda::device::memcpy_async_tx(tmaSmem->buff[ur], inpPacks.peerPtr(world, r),
+                                  cuda::aligned_size_t<16>(tileSize), tmaSmem->bar);
+    tmaSize += tileSize;
+  }
+  r += 1; if (r == nRanks) r = 0;
+}
+auto token = cuda::device::barrier_arrive_tx(tmaSmem->bar, 1, tmaSize);
+tmaSmem->bar.wait(std::move(token));`,
+      flows: (s, L) => [flow(hcurve([L.peer(3).x + 230, L.peer(3).y + 45], [L.b0.x, L.b0.y + 40]), C4[3]), flow(hcurve([L.peer(0).x + 230, L.peer(0).y + 45], [L.b1.x, L.b1.y + 20]), C4[0], { delay: .1 })],
+      commit(s){ s.b0 = { src: 3 }; s.b1 = { src: 0 }; s.mb = "done"; } },
+    { title: "⑥ 再次规约：acc1 ⊕= buff[0], buff[1]",
+      desc: `四个 rank 全部累加完成。如果 nRanks 更大，就重复 ⑤⑥，每批处理两个 peer。`,
+      code: `for (int ur ...) for (int u ...) {
+  tmp1[ur][u] = tmaSmem->buff[ur][lane + WARP_SIZE * u];
+  acc1[u] = applyReduce(red, acc1[u], applyCast<T,Acc>(tmp1[ur][u]));
+}`,
+      flows: (s, L) => [flow(hcurve([L.b0.x + L.b0.w, L.b0.y + 30], [L.reg.x, L.reg.y + 60]), C4[3]), flow(hcurve([L.b1.x + L.b1.w, L.b1.y + 30], [L.reg.x, L.reg.y + 80]), C4[0], { delay: .1 })],
+      commit(s){ s.acc = [1, 2, 3, 0]; s.mb = ""; } },
+    { title: "⑦ postOp + cast，写回 smem buff[0]，fence.proxy.async",
+      desc: `结果先写回 shared memory。因为接下来要由 <b>async proxy</b>（TMA）读取这块 smem，必须执行 <code>fence.proxy.async</code>，把 generic proxy 的写入对 async proxy 可见，再 <code>__syncwarp</code>。`,
+      code: `for (int u ...) acc1[u] = applyPostOp(red, acc1[u]);
+for (int u ...) tmaSmem->buff[0][lane + WARP_SIZE * u] = applyCast<Acc,T>(acc1[u]);
+ptx::fence_proxy_async(ptx::space_shared);
+__syncwarp();`,
+      flows: (s, L) => [flow(hcurve([L.reg.x, L.reg.y + 150], [L.b0.x + L.b0.w, L.b0.y + 40]), COL.accent)],
+      commit(s){ s.b0 = "res"; s.b1 = null; s.mb = "fence"; } },
+    { title: "⑧ lane0：cp.async.bulk smem → global（本地 out）",
+      desc: `lane0 用一条 bulk store 把整个 tile 写到本地 out，<code>commit_group</code> 后执行 <code>wait_group_read&lt;0&gt;</code>，<b>只等 smem 被读完</b>（不等写入全局内存完成），之后 smem 就可以复用了。<br>
+      接下来 <code>inpPacks += wn × tile</code>，lane0 预取下一个本地 tile 到 buff[0]，开始下一轮循环。`,
+      code: `if (lane == 0) {
+  ptx::cp_async_bulk(ptx::space_global, ptx::space_shared,
+                     outPacks.localPtr(), tmaSmem->buff[0], tileSize);
+  ptx::cp_async_bulk_commit_group();
+  ptx::cp_async_bulk_wait_group_read(ptx::n32_t<0>());
+}
+__syncwarp();   // smem 被 async proxy 读完后才能复用`,
+      flows: (s, L) => [flow([[L.b0.x + L.b0.w, L.b0.y + 18], [670, L.b0.y + 18], [670, 440], [L.out.x + 60, 440], [L.out.x + 60, L.out.y + L.out.h]], COL.accent, { label: "cp.async.bulk", labelAt: .62 })],
+      commit(s){ s.out = true; s.mb = ""; } },
+  ],
+  legend: `顶部四个彩色块 = 各卡 in[seg1] 中同一 tile；buff = shared memory 缓冲；绿色细条 = lane0。`,
+};
+
+/* ============================== 场景 3：LDMC ============================== */
+const sMC = {
+  id: "ldmc", tab: "③ 单机 LDMC（NVLS）", vb: [1100, 600],
+  layout(){
+    const G = [];
+    for (let i = 0; i < 4; i++){ const x = 40 + i * 262, y = 330;
+      G.push({ x, y, w: 240, h: 200, cell: k => ({ x: x + 14 + k * 54, y: y + 52, w: 48, h: 34 }),
+        bar: { x: x + 14, y: y + 100, w: 212, h: 22 }, out: { x: x + 14, y: y + 154, w: 212, h: 30 } }); }
+    const slot = i => ({ x: 222 + i * 168, y: 140, w: 150, h: 92 });
+    return { G, slot, sw: { x: 200, y: 84, w: 700, h: 168 } };
+  },
+  init(){ return { bar: "", req: [null, null, null, null], out: [false, false, false, false] }; },
+  draw(svg, s, L){
+    T(svg, 40, 36, "ReduceScatter_LDMC：一条 multimem.ld_reduce 让 NVSwitch 读取所有 rank 的同一地址，并在交换机内求和", { size: 15, weight: 700 });
+    T(svg, 40, 60, "NVLink 读流量从 nRanks × N 降到约 N；要求 NVLS 可用、LSA > 2 卡，且 dtype/op 受支持（sum / minmax 等）", { size: 12.5, fill: COL.muted });
+    const W = L.sw;
+    R(svg, W.x, W.y, W.w, W.h, "#141f17", { stroke: "#3f6a1a", rx: 14, sw: 1.5 });
+    T(svg, W.x + 16, W.y + 26, "NVSwitch · NVLS 多播对象（lsaMultimem）", { size: 13, weight: 700, fill: COL.accent });
+    T(svg, W.x + W.w - 16, W.y + 26, "交换机内完成 ⊕", { size: 11.5, fill: "#9bc06a", anchor: "end" });
+    for (let i = 0; i < 4; i++){ const q = L.slot(i);
+      R(svg, q.x, q.y, q.w, q.h, "#0f1712", { stroke: s.req[i] ? C4[i] : "#2c3f22", rx: 8 });
+      T(svg, q.x + 10, q.y + 18, `GPU${i} 的请求：seg${i}`, { size: 11, fill: s.req[i] ? C4[i] : COL.muted, weight: 600 });
+      for (let k = 0; k < 4; k++){ const x = q.x + 10 + k * 33, y = q.y + 36; const has = s.req[i] && s.req[i].includes(k);
+        if (has) R(svg, x, y, 27, 27, C4[k], { rx: 4 }); else emptyBox(svg, x, y, 27, 27);
+        T(svg, x + 13.5, y + 18, `r${k}`, { anchor: "middle", size: 10, fill: has ? "#0b0f15" : COL.muted, weight: 700 }); }
+      if (s.req[i] && s.req[i].length === 0) T(svg, q.x + 10, q.y + 82, "等待交换机取数…", { size: 10, fill: COL.amber });
+      if (s.req[i] && s.req[i].length === 4) T(svg, q.x + 10, q.y + 82, "Σ 完成 → 返回", { size: 10, fill: COL.accent }); }
+    L.G.forEach((g, i) => {
+      card(svg, g.x, g.y, g.w, g.h);
+      T(svg, g.x + 14, g.y + 26, `GPU ${i}`, { size: 16, weight: 700, fill: C4[i] });
+      T(svg, g.x + 80, g.y + 26, `rank ${i} · 负责 seg ${i}`, { size: 11.5, fill: COL.muted });
+      T(svg, g.x + 14, g.y + 46, "input（已绑定到多播对象）", { size: 10.5, fill: COL.muted });
+      for (let k = 0; k < 4; k++){ const c = g.cell(k); R(svg, c.x, c.y, c.w, c.h, C4[i], { op: .88, rx: 4 });
+        T(svg, c.x + c.w / 2, c.y + 22, `seg${k}`, { anchor: "middle", size: 11, fill: "#0b0f15", weight: 700 }); }
+      const B = { "": ["barrier：—", "#6e7681"], sync: ["bar.sync ✓（multimem barrier）", COL.accent], end: ["bar.sync ✓ 结束", COL.blue] }[s.bar];
+      pill(svg, g.bar.x, g.bar.y, g.bar.w, g.bar.h, B[0], B[1]);
+      T(svg, g.x + 14, g.y + 148, "out（本地）", { size: 10.5, fill: COL.muted });
+      if (s.out[i]){ stripes(svg, g.out.x, g.out.y, g.out.w, g.out.h, C4); T(svg, g.out.x + g.out.w / 2, g.out.y + 20, `Σ seg${i}`, { anchor: "middle", size: 12, fill: "#0b0f15", weight: 700 }); }
+      else emptyBox(svg, g.out.x, g.out.y, g.out.w, g.out.h, "—");
+    });
+    T(svg, 40, 568, "地址错开：startOffsetMultiplier = rank ^ ((rank>>1)&1) → 0 1 3 2 4 5 7 6 …，起点 = 倍数 × 32MB mod 主体长度。即使每个 rank 只有 64MB 数据，", { size: 11.5, fill: COL.muted });
+    T(svg, 40, 586, "各 rank 也从不同地址开始扫描，避免所有 rank 同时访问多播地址空间的同一段。", { size: 11.5, fill: COL.muted });
+  },
+  steps: [
+    { title: "初始状态",
+      desc: `每张卡的 input 绑定在同一个 <b>NVLS 多播对象</b>上。对多播地址执行 <code>multimem.ld_reduce</code> 时，NVSwitch 会从所有成员 GPU 的同一偏移读取数据，<b>在交换机内完成规约</b>，只把结果返回给发起请求的 GPU。`,
+      code: `// ncclSymkRun_ReduceScatter_LDMC
+auto const& multimem = handler.comm.lsaMultimem;
+reduceMultimem(tn, t, red,
+   input.multimemPtr(multimem) + rank * nAllElts,   // 多播地址
+   output.localPtr(), nElts, rank);` },
+    { title: "① bar.sync（multimem barrier, acquire）",
+      desc: `LDMC 一开始就需要所有卡的输入都已就绪，所以直接做一次完整的 <code>bar.sync</code>，这次 barrier 本身也通过 multimem 实现。<br>它没有 LD 那样的“先 arrive、预取本地、再 wait”的重叠：一条 ld_reduce 同时依赖所有卡的数据，没有可以提前读的本地部分。`,
+      code: `ncclLsaBarrierSession<ncclCoopCta> bar{cta, comm, ncclTeamTagLsa(), blockIdx.x,
+                                      /*multimem=*/true};
+bar.sync(ncclCoopCta(), cuda::memory_order_acquire);`,
+      commit(s){ s.bar = "sync"; } },
+    { title: "② 每个 GPU 对 mc + r·N 发 multimem.ld_reduce",
+      desc: `GPU r 的线程对<b>多播地址</b>上属于 seg r 的位置发出 <code>applyLoadMultimem</code>（multimem.ld_reduce），pack 宽度由 <code>LoadMultimem_BigPackSize</code> 决定（通常 16B）。<br>每个 warp 一次展开 <code>UnrollPacks = 8 × (16/BytePerPack)</code> 个 pack。`,
+      code: `for (int u = 0; u < UnrollPacks; u++)
+  tmp[u] = applyPostOp(red,
+      applyLoadMultimem<Red, BytePerPack>(red,
+          inputUptr + cursor + u * WARP_SIZE * BytePerPack));`,
+      flows: (s, L) => [0, 1, 2, 3].map(i => { const g = L.G[i], q = L.slot(i);
+        return flow(vcurve([g.x + g.w / 2, g.y], [q.x + q.w / 2, q.y + q.h]), C4[i], { label: i === 0 ? "multimem.ld_reduce" : undefined, labelAt: .45 }); }),
+      commit(s){ s.req = [[], [], [], []]; } },
+    { title: "③ NVSwitch 扇出：从所有 GPU 读取同一偏移",
+      desc: `交换机收到 GPU r 的请求后，从 GPU0~3 的 <b>seg r</b> 读取数据并在交换机内累加。<br>这些读取由硬件完成，<b>不占用任何 GPU 的 SM 指令</b>。`,
+      code: `// 硬件行为：mc 地址 → 每个成员 GPU 的同一物理偏移
+// result = in_0[x] ⊕ in_1[x] ⊕ in_2[x] ⊕ in_3[x]`,
+      flows: (s, L) => { const out = []; for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++){ const c = L.G[j].cell(i), q = L.slot(i);
+        out.push(flow(cubic([c.x + c.w / 2, c.y], [c.x + c.w / 2, 290], [q.x + 23 + j * 33, 300], [q.x + 23 + j * 33, q.y + 63]), C4[j], { delay: i * .05 + j * .03, thin: false, w: 1.4, r: 4 })); } return out; },
+      commit(s){ s.req = [[0, 1, 2, 3], [0, 1, 2, 3], [0, 1, 2, 3], [0, 1, 2, 3]]; } },
+    { title: "④ 返回规约结果 → postOp → 写本地 out",
+      desc: `交换机把求和结果返回给发起请求的 GPU。线程执行 <code>applyPostOp</code> 后写到<b>本地</b> out。<br>
+      前缀和后缀中不对齐的元素按单个元素（<code>sizeof(T)</code>）做 multimem load。`,
+      code: `for (int u ...)
+  *reinterpret_cast<BytePack<BytePerPack>*>(outputUptr + cursor + u*WARP_SIZE*BytePerPack) = tmp[u];
+cursor += tn * UnrollPacks * BytePerPack;
+if (cursor >= wrapAt) cursor -= nMainBytes;   // 从错开的起点回绕`,
+      flows: (s, L) => [0, 1, 2, 3].map(i => { const g = L.G[i], q = L.slot(i); const cx = q.x + q.w / 2;
+        return flow([[cx, q.y + q.h], [cx, 296], [g.x - 11, 296], [g.x - 11, g.out.y + 15], [g.out.x, g.out.y + 15]], COL.accent, { delay: i * .05 }); }),
+      commit(s){ s.out = [true, true, true, true]; } },
+    { title: "⑤ bar.sync 结束",
+      desc: `结尾再做一次 <code>bar.sync</code>，确认其他卡发起的 multimem 读取都已结束，之后才能让用户复用 input。`,
+      code: `bar.sync(ncclCoopCta(), cuda::memory_order_relaxed);`,
+      commit(s){ s.bar = "end"; } },
+  ],
+  legend: `绿色框 = NVSwitch；每个请求槽中的小方块表示交换机已经读取并累加了哪些 rank 的数据。`,
+};
+
+/* ============================== 场景 4：LL ============================== */
+const sLL = {
+  id: "ll", tab: "④ 单机 LL（推送式）", vb: [1100, 560],
+  layout(){
+    const G = [];
+    for (let i = 0; i < 4; i++){ const x = 40 + i * 262, y = 120;
+      G.push({ x, y, w: 240, h: 330, cell: k => ({ x: x + 14 + k * 54, y: y + 52, w: 48, h: 34 }),
+        slot: k => ({ x: x + 14 + k * 54, y: y + 130, w: 48, h: 40 }),
+        sq: k => ({ x: x + 14 + k * 54, y: y + 214, w: 48, h: 30 }),
+        out: { x: x + 14, y: y + 282, w: 212, h: 30 } }); }
+    return { G };
+  },
+  init(){ return { epoch: 1, slots: [[null, null, null, null], [null, null, null, null], [null, null, null, null], [null, null, null, null]], acc: [[], [], [], []], out: [false, false, false, false] }; },
+  draw(svg, s, L){
+    T(svg, 40, 36, "ReduceScatter_LL：推送式 + LL 协议（数据与 flag 一起写入），用于小消息，没有独立的 barrier", { size: 15, weight: 700 });
+    T(svg, 40, 60, `每个线程把 in[seg p] 的 8B pack 推送到 GPU p 的收件槽 slot[rank]；接收方轮询 flag，等于当前 epoch 即表示数据有效。当前 epoch = ${s.epoch}`, { size: 12.5, fill: COL.muted });
+    R(svg, 28, 96, 1044, 372, COL.band, { stroke: COL.bandS, dash: "5 4", rx: 14 });
+    L.G.forEach((g, i) => {
+      card(svg, g.x, g.y, g.w, g.h);
+      T(svg, g.x + 14, g.y + 26, `GPU ${i}`, { size: 16, weight: 700, fill: C4[i] });
+      T(svg, g.x + 80, g.y + 26, `rank ${i}`, { size: 11.5, fill: COL.muted });
+      T(svg, g.x + 14, g.y + 46, "input", { size: 10.5, fill: COL.muted });
+      for (let k = 0; k < 4; k++){ const c = g.cell(k); R(svg, c.x, c.y, c.w, c.h, C4[i], { op: .88, rx: 4 });
+        T(svg, c.x + c.w / 2, c.y + 22, `seg${k}`, { anchor: "middle", size: 11, fill: "#0b0f15", weight: 700 }); }
+      T(svg, g.x + 14, g.y + 122, "LL 收件槽 slot[src]（由 peer 推送写入）", { size: 10.5, fill: COL.muted });
+      for (let k = 0; k < 4; k++){ const q = g.slot(k); const v = s.slots[i][k];
+        if (v){ const fresh = v.epoch === s.epoch; R(svg, q.x, q.y, q.w, q.h, C4[k], { rx: 4, op: fresh ? 1 : .3 });
+          T(svg, q.x + q.w / 2, q.y + 25, `r${k}`, { anchor: "middle", size: 11, fill: "#0b0f15", weight: 700, op: fresh ? 1 : .6 });
+          E("circle", { cx: q.x + q.w - 6, cy: q.y + 6, r: 4.5, fill: fresh ? COL.accent : "#6e7681", stroke: "#0b0f15" }, svg);
+          T(svg, q.x + q.w / 2, q.y + q.h + 12, `flag=${v.epoch}`, { anchor: "middle", size: 9, fill: fresh ? COL.accent : COL.muted, mono: true }); }
+        else emptyBox(svg, q.x, q.y, q.w, q.h, `r${k}`); }
+      T(svg, g.x + 14, g.y + 208, "acc（recvReduce，Unroll = 8）", { size: 10.5, fill: COL.muted });
+      for (let k = 0; k < 4; k++){ const q = g.sq(k); const has = s.acc[i].includes(k);
+        if (has) R(svg, q.x, q.y, q.w, q.h, C4[k], { rx: 4 }); else emptyBox(svg, q.x, q.y, q.w, q.h); }
+      T(svg, g.x + 14, g.y + 276, "out（本地）", { size: 10.5, fill: COL.muted });
+      if (s.out[i]){ stripes(svg, g.out.x, g.out.y, g.out.w, g.out.h, C4); T(svg, g.out.x + g.out.w / 2, g.out.y + 20, `Σ seg${i}`, { anchor: "middle", size: 12, fill: "#0b0f15", weight: 700 }); }
+      else emptyBox(svg, g.out.x, g.out.y, g.out.w, g.out.h, "—");
+    });
+    T(svg, 40, 500, "要点：发送方写 peer（push），接收方只读本地收件槽。flag 与数据在同一次写入中到达，所以“数据到了”和“可以读了”合并成一件事：不需要 barrier，", { size: 11.5, fill: COL.muted });
+    T(svg, 40, 518, "适合延迟主导的小消息。代价：数据要附带 flag，有效带宽低于 LD；槽位容量有限，每轮最多 tn 个 pack；元素计数用 32 位，所以要求 nBusBytes < 2GB。", { size: 11.5, fill: COL.muted });
+  },
+  steps: [
+    { title: "初始状态",
+      desc: `LL 适用于<b>小消息</b>。每个 block 有 <code>ncclLLA2ASession</code>，每张卡上都有一组按 <b>来源 rank</b> 划分的收件槽（slot）。<br>不同于 LD 的拉取式，LL 是<b>推送式</b>：每个线程把自己输入中属于 peer p 的数据直接写到 peer p 的槽里。`,
+      code: `ncclLLA2ASession<ncclCoopCta> lla2a(ncclCoopCta(), comm, ncclTeamLsa(comm),
+                                    handler.lsaLLA2A, blockIdx.x, ncclSymkMaxThreads);` },
+    { title: "① send：in[seg p] 的 8B pack → GPU p 的 slot[rank]",
+      desc: `线程 t 被映射到 (peer, pack) 对，读取本地 <code>input + peer * nStrideElts</code> 的一个 8B pack，然后 <code>lla2a.send(peer, rank*nIterPacks + pack, got)</code>。<br>LL 的写入是<b>数据 + flag</b> 的原子单元，flag 取当前 epoch。`,
+      code: `for (int i = t; i < nRanks * nIterPacks; i += tn) {
+  Pack got = loadPack<Pack>(input + peer * nStrideElts, pack * EltPerPack, nElts);
+  lla2a.send(peer, rank * nIterPacks + pack, got);
+  peer += tn_div_nPacks; pack += tn_mod_nPacks;
+  if (nIterPacks <= pack) { peer += 1; pack -= nIterPacks; }
+}`,
+      flows: (s, L) => { const out = []; for (let i = 0; i < 4; i++) for (let p = 0; p < 4; p++){ const c = L.G[i].cell(p), q = L.G[p].slot(i);
+        const p0 = [c.x + c.w / 2, c.y], p3 = [q.x + q.w / 2, q.y];
+        out.push(i === p ? flow(cubic([c.x + c.w / 2, c.y + c.h], [c.x + c.w / 2, c.y + 60], [q.x + q.w / 2, q.y - 30], p3), C4[i], { delay: i * .04 })
+                         : flow(arc(p0, p3, 104 - Math.abs(p3[0] - p0[0]) / 30 - i * 2), C4[i], { delay: i * .04, w: 1.6, r: 4.5 })); } return out; },
+      commit(s){ for (let p = 0; p < 4; p++) for (let i = 0; i < 4; i++) s.slots[p][i] = { epoch: s.epoch }; } },
+    { title: "② recvReduce：轮询 flag，到齐即规约",
+      desc: `线程 <code>t &lt; nIterPacks</code> 负责接收：在 <code>slot[t + k·nIterPacks]</code>（k = 0..nRanks-1）上轮询，flag 等于当前 epoch 就表示数据已到达，读取后用 <code>applyReduce</code> 累加。整个过程<b>只读本地显存</b>。`,
+      code: `if (t < nIterPacks) {
+  AccPack got = lla2a.template recvReduce</*Unroll=*/8, Pack>(
+      /*slotStart=*/t, /*slotCount=*/nRanks, /*slotStride=*/nIterPacks,
+      /*eltToAcc=*/[&](Pack x){ return applyCast<T,Acc>(x); },
+      /*reduce=*/  [&](AccPack a, AccPack b){ return applyReduce(red, a, b); });`,
+      flows: (s, L) => { const out = []; for (let p = 0; p < 4; p++) for (let k = 0; k < 4; k++){ const a = L.G[p].slot(k), b = L.G[p].sq(k);
+        out.push(flow([[a.x + a.w / 2, a.y + a.h + 16], [b.x + b.w / 2, b.y]], C4[k], { delay: k * .05 })); } return out; },
+      commit(s){ for (let p = 0; p < 4; p++) s.acc[p] = [0, 1, 2, 3]; } },
+    { title: "③ postOp → storePack 写本地 out",
+      desc: `规约结果经 <code>applyPostOp</code> 和 <code>applyCast</code> 后写到本地 out。如果地址或长度不满足 8B 对齐，就走按元素处理的 <code>LL_body</code> 版本。`,
+      code: `  got = applyPostOp(red, got);
+  storePack(output, t * EltPerPack, nElts, applyCast<Acc, T>(got));
+}`,
+      flows: (s, L) => [0, 1, 2, 3].map(p => { const g = L.G[p]; return flow([[g.x + 120, g.y + 246], [g.x + 120, g.out.y]], COL.accent); }),
+      commit(s){ s.out = [true, true, true, true]; } },
+    { title: "④ endEpoch：翻转 epoch，下一轮直接复用槽位",
+      desc: `<code>lla2a.endEpoch()</code> 让 epoch 前进。旧数据的 flag 不再等于新 epoch，自然失效，<b>不需要清零，也不需要 barrier</b>。<br>同步融合进了第一个 epoch，所以 profiler 的 AFTER_OPEN 打点就在第一次 endEpoch 处。数据超过一轮时，<code>input += tn·EltPerPack</code> 后进入下一轮。`,
+      code: `lla2a.endEpoch(cta);
+input  += tn * EltPerPack;
+output += tn * EltPerPack;
+nElts  -= tn * EltPerPack;
+nPacks -= tn;`,
+      commit(s){ s.epoch += 1; } },
+  ],
+  legend: `收件槽右上角的圆点是 flag：绿色表示等于当前 epoch（有效），灰色表示旧 epoch。`,
+};
+
+/* ============================== 场景 5：跨节点 RailA2A ============================== */
+const nm = r => `N${r >> 2}·G${r & 3}(w${r})`;
+const nodeR = n => [n * 4, n * 4 + 1, n * 4 + 2, n * 4 + 3];
+const sX = {
+  id: "x", tab: "⑤ 跨节点 RailA2A_LsaLD", vb: [1100, 730], params: { focus: 5, all: false },
+  layout(){
+    const cards = [];
+    for (let n = 0; n < 3; n++) for (let j = 0; j < 4; j++){ const x = 120 + j * 240, y = 86 + n * 210;
+      cards.push({ n, j, x, y, w: 222, h: 182,
+        cell: k => ({ x: x + 8 + k * 16.8 + Math.floor(k / 4) * 3, y: y + 38, w: 14.5, h: 20 }),
+        ob: { x: x + 8, y: y + 66, w: 100, h: 40 }, ib: { x: x + 114, y: y + 66, w: 100, h: 40 },
+        asq: k => ({ x: x + 8 + k * 16 + Math.floor(k / 4) * 6, y: y + 128, w: 13, h: 13 }),
+        out: { x: x + 8, y: y + 151, w: 206, h: 22 } }); }
+    return { cards };
+  },
+  controls(div, rerender){
+    div.innerHTML = `<label>焦点 rank（目标 w）<select id="xf">${[...Array(12).keys()].map(r => `<option value="${r}" ${r === sX.params.focus ? "selected" : ""}>${nm(r)}</option>`).join("")}</select></label>
+      <label><input type="checkbox" id="xa" ${sX.params.all ? "checked" : ""}> 同时显示所有 rank 的流量（细线）</label>
+      <span>点击卡片也可以切换焦点</span>`;
+    div.querySelector("#xf").onchange = e => { sX.params.focus = +e.target.value; rerender(); };
+    div.querySelector("#xa").onchange = e => { sX.params.all = e.target.checked; rerender(); };
+  },
+  init(){ return { bar: "", ob: Array(12).fill(null), ib: Array(12).fill(null), acc: Array.from({ length: 12 }, () => []), out: Array(12).fill(false) }; },
+  draw(svg, s, L, sc){
+    const F = sc.params.focus;
+    T(svg, 30, 26, "ReduceScatter_RailA2A_LsaLD（rsAlgoHier）：节点内 LSA 规约 + rail 上 all-to-all（GIN = GPU 直接发起 RDMA）", { size: 15, weight: 700 });
+    T(svg, 30, 47, `3 节点 × 4 GPU，w = 节点号 × 4 + 本地号。焦点：${nm(F)}，白框标出各卡 input 中属于 w${F} 的那一段`, { size: 12, fill: COL.muted });
+    const BT = { "": ["lsaBar：—", "#6e7681"], sync: ["lsaBar.sync ✓", COL.accent], end: ["lsaBar.sync ✓（结束）", COL.blue] }[s.bar];
+    pill(svg, 900, 34, 170, 22, BT[0], BT[1]);
+    for (let n = 0; n < 3; n++){ const y = 86 + n * 210;
+      R(svg, 104, y - 9, 974, 200, COL.band, { stroke: COL.bandS, rx: 12 });
+      T(svg, 22, y + 76, `Node ${n}`, { size: 16, weight: 700 });
+      T(svg, 22, y + 96, "LSA 域", { size: 11, fill: COL.muted });
+      T(svg, 22, y + 111, "NVLink", { size: 11, fill: COL.muted }); }
+    for (let j = 0; j < 4; j++){ const x = 120 + j * 240 - 8;
+      E("line", { x1: x, y1: 70, x2: x, y2: 700, stroke: "#5b6b86", "stroke-dasharray": "2 5", "stroke-width": 1.2 }, svg);
+      T(svg, x + 4, 74, `rail ${j}（GIN / RDMA）`, { size: 11, fill: "#9fb3d1", weight: 600 }); }
+    L.cards.forEach((c, r) => {
+      const isF = r === F;
+      const g = E("g", { style: "cursor:pointer" }, svg);
+      g.addEventListener("click", () => { sc.params.focus = r; const sel = document.getElementById("xf"); if (sel) sel.value = r; render(); });
+      card(g, c.x, c.y, c.w, c.h, { stroke: isF ? COL.accent : COL.cardS, sw: isF ? 2.2 : 1 });
+      T(g, c.x + 8, c.y + 19, `N${c.n}·G${c.j}`, { size: 13, weight: 700, fill: c12(r) });
+      T(g, c.x + 66, c.y + 19, `w${r}`, { size: 11.5, fill: COL.muted, mono: true });
+      if (isF) T(g, c.x + c.w - 8, c.y + 19, "焦点", { size: 10.5, fill: COL.accent, anchor: "end", weight: 700 });
+      T(g, c.x + c.w - (isF ? 40 : 8), c.y + 19, "input：12 段", { size: 9.5, fill: COL.muted, anchor: "end" });
+      for (let k = 0; k < 12; k++){ const q = c.cell(k);
+        R(g, q.x, q.y, q.w, q.h, c12(r), { rx: 2, op: .85, stroke: k === F ? "#ffffff" : undefined, sw: 1.8 }); }
+      const box = (b, v, kind) => {
+        R(g, b.x, b.y, b.w, b.h, "#0e141e", { stroke: v ? (kind === "ob" ? COL.blue : COL.amber) : COL.dim, rx: 6, dash: v ? undefined : "4 3" });
+        T(g, b.x + 6, b.y + 13, v ? (kind === "ob" ? `outbox → w${v.to}` : `inbox ← w${v.from}`) : (kind === "ob" ? "outbox（空）" : "inbox（空）"),
+          { size: 9.5, fill: v ? (kind === "ob" ? COL.blue : COL.amber) : COL.muted, weight: 600 });
+        if (v) v.src.forEach((src, i) => R(g, b.x + 6 + i * 17, b.y + 20, 14, 14, c12(src), { rx: 2 }));
+      };
+      box(c.ob, s.ob[r], "ob"); box(c.ib, s.ib[r], "ib");
+      T(g, c.x + 8, c.y + 123, "accum（fp32）：已累加的来源 rank", { size: 9.5, fill: COL.muted });
+      for (let k = 0; k < 12; k++){ const q = c.asq(k); const has = s.acc[r].includes(k);
+        if (has) R(g, q.x, q.y, q.w, q.h, c12(k), { rx: 2 }); else R(g, q.x, q.y, q.w, q.h, "none", { stroke: COL.dim, rx: 2, dash: "2 2" }); }
+      if (s.out[r]){ stripes(g, c.out.x, c.out.y, c.out.w, c.out.h, [...Array(12).keys()].map(c12)); T(g, c.out.x + c.out.w / 2, c.out.y + 15, `out = Σ 12 rank 的 seg w${r}`, { anchor: "middle", size: 10.5, fill: "#0b0f15", weight: 700 }); }
+      else R(g, c.out.x, c.out.y, c.out.w, c.out.h, "none", { stroke: COL.dim, rx: 4, dash: "4 3" });
+    });
+    T(svg, 30, 722, "out[w] = Σ_n P_n[w]，P_n[w] = Σ_{g∈节点n} in_{n,g}[w]。每张卡跨网只发送 (nNodes−1)×N；节点内的规约由 NVLink（LDMC 版本用 multimem）承担。", { size: 11.5, fill: COL.muted });
+  },
+  steps: [],
+  legend: `颜色：<span class="sw" style="background:${c12(1)}"></span>Node0（蓝系）
+  <span class="sw" style="background:${c12(5)};margin-left:8px"></span>Node1（绿系）
+  <span class="sw" style="background:${c12(9)};margin-left:8px"></span>Node2（橙系），同一节点内深浅区分 GPU。<br>
+  <span style="color:${COL.blue}">outbox</span> = Stage0 规约出的部分和，等待 put；<span style="color:${COL.amber}">inbox</span> = 收到的其他节点部分和。<br>
+  黄色虚线 = C2S credit（接收方归还缓冲区）。`,
+};
+(function buildXSteps(){
+  const F = () => sX.params.focus;
+  const W = () => sX.params.all ? [...Array(12).keys()] : [F()];
+  const cellTop = (L, r, k) => { const c = L.cards[r].cell(k); return [c.x + c.w / 2, c.y]; };
+  const asqTop = (L, r, k) => { const q = L.cards[r].asq(k); return [q.x + q.w / 2, q.y]; };
+  const obSqTop = (L, r, g) => { const b = L.cards[r].ob; return [b.x + 13 + g * 17, b.y + 20]; };
+  const rowArc = (L, p0, p3, r) => arc(p0, p3, L.cards[r].y - 4 - Math.abs(p3[0] - p0[0]) / 50);
+  const lsaFlows = (L, w, toRank, toPt, thin) => { const n = toRank >> 2; return [0, 1, 2, 3].map(g => { const src = n * 4 + g;
+    return flow(rowArc(L, cellTop(L, src, w), toPt(g, src), toRank), c12(src), { thin, delay: g * .05 }); }); };
+  const putPath = (L, S, w, thin, label) => { const a = L.cards[S], b = L.cards[w]; const rx = a.x - 8;
+    return flow([[a.ob.x, a.ob.y + 20], [rx, a.ob.y + 20], [rx, b.y + 62], [b.ib.x + b.ib.w / 2, b.y + 62], [b.ib.x + b.ib.w / 2, b.ib.y]], thin ? "#9fb3d1" : COL.blue,
+      { thin, label: thin ? undefined : label, labelAt: .5, labelDx: 0, w: thin ? 1 : 2.6 }); };
+  const creditPath = (L, w, S, thin) => { const a = L.cards[w], b = L.cards[S]; const rx = a.x - 14;
+    return flow([[a.ib.x + a.ib.w / 2, a.ib.y + a.ib.h], [a.ib.x + a.ib.w / 2, a.y + 113], [rx, a.y + 113], [rx, b.y + 113], [b.ob.x + b.ob.w / 2, b.y + 113], [b.ob.x + b.ob.w / 2, b.ob.y + b.ob.h]],
+      COL.amber, { thin, dash: "5 4", w: thin ? .8 : 1.6, r: thin ? 2 : 4, label: thin ? undefined : "C2S credit", labelAt: .5, delay: .2 }); };
+  const ibToAcc = (L, w, fromNode, thin) => { const c = L.cards[w]; const q = c.asq(fromNode * 4);
+    return flow(vcurve([c.ib.x + c.ib.w / 2, c.ib.y + c.ib.h], [q.x + 30, q.y]), COL.amber, { thin }); };
+  const sortF = arr => arr.sort((a, b) => (b.thin ? 1 : 0) - (a.thin ? 1 : 0));
+
+  sX.steps = [
+    { title: "初始状态：两种 team 与任务分解",
+      desc: () => { const f = F(), m = f >> 2, j = f & 3; return `
+      <b>LSA team</b>：同一 NVLink 域（本例是同一节点）内的 4 张卡。<b>Rail team</b>：<code>rail.rank = rank / lsaSize</code>，即各节点上本地号相同的卡（同一列）。<br>
+      焦点 <b>w${f}</b> = N${m}·G${j}。它的输出拆成 3 份部分和：<ul>
+      <li>P<sub>${m}</sub>：本节点 4 卡规约，由 w${f} 自己完成，存到 accum</li>
+      <li>P<sub>${(m + 2) % 3}</sub>：由同 rail 的 ${nm(((m + 2) % 3) * 4 + j)} 在其节点内规约后，在 step0 put 过来</li>
+      <li>P<sub>${(m + 1) % 3}</sub>：由 ${nm(((m + 1) % 3) * 4 + j)} 规约后，在 step1 put 过来</li></ul>
+      kernel 选择：当 <code>lsa.nRanks &lt; nRanks</code> 时只允许 GIN kernel（<code>needGin</code>）。`; },
+      code: `// sym_kernels.cc
+bool needGin = ncclTeamLsa(comm).nRanks < comm->nRanks;
+kmask &= needGin ? kernelMask_Gin : ~kernelMask_Gin;
+// reduce_scatter_gin.cuh
+ncclTeam world = ncclTeamWorld(comm);
+ncclTeam rail  = ncclTeamRail(comm);   // nRanks = nNodes, stride = lsaSize
+ncclTeam lsa   = ncclTeamLsa(comm);` },
+    { title: "① lsaBar.sync：节点内同步",
+      desc: `开始前只做<b>节点内</b>的 LSA barrier，确认本节点 peer 的输入可以通过 NVLink 读取。跨节点不需要全局 barrier，各节点之间的先后关系由 inbox 的信号和 credit 机制保证。`,
+      code: `ncclGinInboxA2ASession<ncclCoopCta> inbox{cta, gin, rail, handler.ginInboxRail, blockIdx.x};
+ncclLsaBarrierSession<ncclCoopCta> lsaBar{cta, comm, ncclTeamTagLsa(), blockIdx.x, multimem};
+lsaBar.sync(cta, cuda::memory_order_acquire);`,
+      commit(s){ s.bar = "sync"; } },
+    { title: "② 并行：Stage1 initFn 规约自己段 ‖ Stage0 step0 规约发往 rail+1 的段",
+      desc: () => { const f = F(), m = f >> 2, j = f & 3, S = ((m + 2) % 3) * 4 + j; return `
+      同一个 CTA 里的两组 warp <b>同时</b>工作：<ul>
+      <li><b>Stage1 workers</b>（每张卡）：<code>reduceLsa</code> 从本节点 4 卡读取 seg <i>自己</i> → <b>accum</b>（fp32）。图中 w${f} 汇聚了 N${m} 四卡的数据。</li>
+      <li><b>Stage0 workers</b>（每张卡）：<code>reduceLsaBatch</code> 从本节点 4 卡读取发往 <code>rail.rank+1</code> 的那一段 → <b>outbox</b>。图中 ${nm(S)} 把 N${S >> 2} 四卡的 seg w${f} 规约后放进 outbox。</li></ul>
+      LSA 规约的读顺序同样是 <code>lsa.rank + s</code> 错开。`; },
+      code: `// Stage1 initFn
+reduceLsa(coopRole, nChunkElts, GMemTemporalTag(), 16, /*dst=*/accum, red, mmRed,
+          /*src=*/inPtr + world.rank * nAllElts, comm, multimemTag);
+// Stage0 stepFn (worker)
+outbox.waitBufs(coopRole, 0, nSteps);
+reduceLsaBatch(coopRole, nSteps, nChunkElts, GMemTag(), 16,
+   /*getDst=*/[&](int i){ return (T*)outbox_getBufPtr(i); }, red, mmRed, inPtr,
+   /*getSrcOffset=*/[&](int i){ int peer = inbox.getSendPeer(step0+i, true);   // rail.rank+1+step
+                                return ncclTeamRankToTeam(world, rail, peer) * nAllElts; }, ...);`,
+      flows: (s, L) => { const out = []; for (const w of W()){ const thin = w !== F(); const m = w >> 2, j = w & 3, S = ((m + 2) % 3) * 4 + j;
+        out.push(...lsaFlows(L, w, w, (g, src) => asqTop(L, w, src), thin));
+        out.push(...lsaFlows(L, w, S, (g) => obSqTop(L, S, g), thin)); } return sortF(out); },
+      commit(s){ for (let r = 0; r < 12; r++){ const n = r >> 2, j = r & 3; s.acc[r] = nodeR(n); s.ob[r] = { to: ((n + 1) % 3) * 4 + j, src: nodeR(n) }; } } },
+    { title: "③ Stage0 GIN warp：gin.put step0（沿 rail 发给 rail.rank+1）",
+      desc: () => { const f = F(), m = f >> 2, j = f & 3, S = ((m + 2) % 3) * 4 + j; return `
+      每个 Stage0 的 GIN warp（warp 0）调用 <code>inbox.postSends</code>：把 outbox 中的部分和 <code>gin.put</code> 到对端 inbox 的槽位，并附带 <code>SignalInc(R2R)</code>，接收方据此知道数据已到达。<br>
+      发送对象 <code>getSendPeer(step) = rail.rank + 1 + step</code>。step0 时 N0→N1、N1→N2、N2→N0，<b>每个节点恰好收一份、发一份，不会出现 incast</b>。<br>
+      图中 ${nm(S)} → ${nm(f)}。`; },
+      code: `inbox.postSends(coopRole, step0, nSteps,
+  /*getPtr*/ [&](int i, int peer){ return lsa.nRanks == 1 ? inPtr + getInputOffset(step0+i)
+                                                         : (ncclSymPtr<T>)outbox.getBuf(i); },
+  /*getEltCount*/ ..., /*getCompletion*/ ...,
+  /*afterPost*/ [&](int i, int peer){ outbox.recordRequest(rail, peer, i); });
+// postSends 内部：
+gin.put(team, peer, /*dst=*/getBufSymPtr(monoStep), /*src=*/srcPtr, size,
+        ncclGin_SignalInc{getR2RSignal(monoStep)}, completion);`,
+      flows: (s, L) => { const out = []; for (const w of W()){ const m = w >> 2, j = w & 3; out.push(putPath(L, ((m + 2) % 3) * 4 + j, w, w !== F(), "gin.put + R2R signal")); } return sortF(out); },
+      commit(s){ const ob = s.ob.map(o => o && { to: o.to, src: o.src.slice() }); for (let r = 0; r < 12; r++){ const n = r >> 2, j = r & 3, S = ((n + 2) % 3) * 4 + j; s.ib[r] = { from: S, src: ob[S].src.slice() }; } } },
+    { title: "④ Stage1：waitRecvs → accum += inbox；同时 Stage0 做 step1 的 LSA 规约",
+      desc: () => { const f = F(), m = f >> 2, j = f & 3, S = ((m + 2) % 3) * 4 + j, S2 = ((m + 1) % 3) * 4 + j; return `
+      <ul><li><b>Stage1 workers</b>：<code>inbox.waitRecvs</code> 等待 R2R 信号，然后把 inbox 累加进 accum。w${f} 现在包含 2 个节点的数据。</li>
+      <li><b>Stage1 GIN warp</b>：<code>finishRecvs</code> 向发送方 ${nm(S)} 发送 <b>C2S credit</b>，表示这个槽位可以重新写入（黄色虚线）。</li>
+      <li><b>Stage0 workers</b>（与上面并行）：规约 step1 的数据（发往 <code>rail.rank+2</code>）。${nm(S2)} 规约 N${S2 >> 2} 四卡的 seg w${f}。</li></ul>`; },
+      code: `// Stage1 worker
+inbox.waitRecvs(coopRole, step0, nSteps);
+reduce(coopRole, red, /*inPlace=*/true, nChunkElts, GMemTemporalTag(), 16, /*dst=*/accum,
+       /*nSrcs=*/nSteps, 16-1, 0, [&](int s){ return (T*)inbox_getBufPtr(s); });
+coopStage.sync();
+// Stage1 GIN warp
+inbox.finishRecvs(coopRole, step0, nSteps);   // → sendC2S(...) 归还 credit`,
+      flows: (s, L) => { const out = []; for (const w of W()){ const thin = w !== F(); const m = w >> 2, j = w & 3, S = ((m + 2) % 3) * 4 + j, S2 = ((m + 1) % 3) * 4 + j;
+        out.push(ibToAcc(L, w, S >> 2, thin)); out.push(creditPath(L, w, S, thin)); out.push(...lsaFlows(L, w, S2, (g) => obSqTop(L, S2, g), thin)); } return sortF(out); },
+      commit(s){ for (let r = 0; r < 12; r++){ const n = r >> 2, j = r & 3; s.acc[r] = s.acc[r].concat(s.ib[r].src); s.ib[r] = null; s.ob[r] = { to: ((n + 2) % 3) * 4 + j, src: nodeR(n) }; } } },
+    { title: "⑤ gin.put step1（发给 rail.rank+2）",
+      desc: () => { const f = F(), m = f >> 2, j = f & 3, S2 = ((m + 1) % 3) * 4 + j; return `step1：N0→N2、N1→N0、N2→N1。图中 ${nm(S2)} → ${nm(f)}。<br>
+      实际实现中，一批最多 <code>nSteps ≤ nBufs/2</code> 个 step 一起 post，本演示每批 1 个 step。put 之前 Stage0 已经确认对端槽位有 credit。`; },
+      code: `int nSteps = min(rail.nRanks - 1, 1 << (nBufs_log2 - 1));
+do {
+  nSteps = min(nSteps, rail.nRanks - 1 - step);
+  stepFn(step, nSteps, nChunkElts, loopInput);
+  step += nSteps;
+} while (step != rail.nRanks - 1);`,
+      flows: (s, L) => { const out = []; for (const w of W()){ const m = w >> 2, j = w & 3; out.push(putPath(L, ((m + 1) % 3) * 4 + j, w, w !== F(), "gin.put step1")); } return sortF(out); },
+      commit(s){ const ob = s.ob.map(o => o && { to: o.to, src: o.src.slice() }); for (let r = 0; r < 12; r++){ const n = r >> 2, j = r & 3, S = ((n + 1) % 3) * 4 + j; s.ib[r] = { from: S, src: ob[S].src.slice() }; } } },
+    { title: "⑥ accum += inbox；归还 credit",
+      desc: () => `accum 现在包含全部 3 个节点、12 个 rank 的数据。Stage1 GIN warp 再发一次 C2S credit。`,
+      code: `inbox.waitRecvs(coopRole, step0, nSteps);
+reduce(..., /*dst=*/accum, /*nSrcs=*/nSteps, ...);
+inbox.finishRecvs(coopRole, step0, nSteps);`,
+      flows: (s, L) => { const out = []; for (const w of W()){ const thin = w !== F(); const m = w >> 2, j = w & 3, S2 = ((m + 1) % 3) * 4 + j;
+        out.push(ibToAcc(L, w, S2 >> 2, thin)); out.push(creditPath(L, w, S2, thin)); } return sortF(out); },
+      commit(s){ for (let r = 0; r < 12; r++){ s.acc[r] = s.acc[r].concat(s.ib[r].src); s.ib[r] = null; s.ob[r] = null; } } },
+    { title: "⑦ finishFn：out = postOp(accum) → 本地 out；endRound",
+      desc: `Stage1 workers 把 fp32 accum 经 <code>applyPostOp</code> 转回 T，写到<b>本地</b> out。<code>coopRole.sync()</code> 防止下一个 chunk 的 initFn 覆盖还没读完的 accum。<br>
+      <code>inbox.endRound()</code> 后进入下一个 chunk（<code>loopInput += nChunkElts</code>）。`,
+      code: `copy(coopRole, nChunkElts, GMemTag(), /*dst=*/outPtr.localPtr(),
+     GMemTemporalTag(), /*src=*/accum,
+     [&](auto x){ return applyPostOp(red, x); });
+coopRole.sync();   // prevent initFn from trampling accum
+...
+inbox.endRound(cta);`,
+      flows: (s, L) => { const out = []; for (const w of W()){ const c = L.cards[w]; const q = c.asq(6);
+        out.push(flow([[q.x, q.y + q.h], [q.x, c.out.y]], COL.accent, { thin: w !== F() })); } return sortF(out); },
+      commit(s){ for (let r = 0; r < 12; r++) s.out[r] = true; } },
+    { title: "⑧ 收尾：等待在途请求、lsaBar.sync",
+      desc: `所有 chunk 处理完后：<ul><li>若 <code>lsa.nRanks == 1</code>（每节点 1 卡），Stage0 直接从用户输入零拷贝 put，此时要 <code>waitRecentRequests</code>，等最后几次 put 读完输入。</li>
+      <li>最后再做一次 <code>lsaBar.sync</code>，确认节点内 peer 不再读取本卡的 input。</li></ul>
+      LsaLDMC 版本中，Stage0/Stage1 的节点内规约改用 multimem（读量从 L 份降到 1 份），warp 分配也随之改变，见 ⑥ 号场景。`,
+      code: `if (stage == 0) {
+  if (lsa.nRanks == 1) outbox.waitRecentRequests(coopRole);
+  outbox.~ncclGinOutboxSession();
+}
+lsaBar.sync(cta, cuda::memory_order_relaxed);`,
+      commit(s){ s.bar = "end"; } },
+  ];
+})();
+
+/* ============================== 场景 6：CTA 流水线 ============================== */
+const LANES = [
+  { k: "s0g", name: "Stage0 GIN warp", sub: "warp 0 · postSends", color: COL.accent },
+  { k: "s0w", name: "Stage0 workers", sub: "LSA 规约 → outbox", color: COL.blue },
+  { k: "net", name: "网络（RDMA）", sub: "put 在途", color: "#8b98ad" },
+  { k: "s1g", name: "Stage1 GIN warp", sub: "finishRecvs · credit", color: COL.amber },
+  { k: "s1w", name: "Stage1 workers", sub: "inbox → accum → out", color: COL.violet },
+];
+const EV = [];
+function ev(lane, t0, t1, c, lab, d){ EV.push({ lane, t0, t1, c, lab, d }); }
+ev("s1w", 0, 2, 0, "init", "c0 initFn：reduceLsa 本节点 4 卡的“自己段” → accum");
+ev("s0w", 0, 2, 0, "s0 → outbox", "c0 step0：waitBufs → reduceLsaBatch 生成发往 rail+1 的部分和");
+ev("s0g", 2, 2.45, 0, "put", "c0 step0：postSends → gin.put + R2R SignalInc");
+ev("net", 2.45, 4, 0, "c0·s0", "c0 step0 的数据在网络上传输");
+ev("s0w", 2, 4, 0, "s1 → outbox", "c0 step1：reduceLsaBatch 生成发往 rail+2 的部分和（与网络传输重叠）");
+ev("s0g", 4, 4.45, 0, "put", "c0 step1：gin.put");
+ev("net", 4.45, 6, 0, "c0·s1", "c0 step1 的数据在网络上传输");
+ev("s1w", 4, 5, 0, "+= s0", "c0：waitRecvs(step0) → accum += inbox");
+ev("s1g", 5, 5.45, 0, "C2S", "c0：finishRecvs(step0) → C2S credit 归还发送方");
+ev("s1w", 6, 7, 0, "+= s1", "c0：waitRecvs(step1) → accum += inbox");
+ev("s1g", 7, 7.45, 0, "C2S", "c0：finishRecvs(step1)");
+ev("s1w", 7, 8, 0, "→ out", "c0 finishFn：out = postOp(accum)，endRound");
+ev("s0w", 4, 6, 1, "s0 → outbox", "c1 step0：Stage0 不等 Stage1，直接开始下一个 chunk");
+ev("s0g", 6, 6.45, 1, "put", "c1 step0：gin.put（对端槽位在 t=5.45 已收到 credit）");
+ev("net", 6.45, 8, 1, "c1·s0", "c1 step0 的数据在网络上传输");
+ev("s0w", 6, 8, 1, "s1 → outbox", "c1 step1：reduceLsaBatch");
+ev("s0g", 8, 8.45, 1, "put", "c1 step1：gin.put");
+ev("net", 8.45, 10, 1, "c1·s1", "c1 step1 的数据在网络上传输");
+ev("s1w", 8, 10, 1, "init", "c1 initFn：reduceLsa 自己段 → accum（c0 的 accum 已写出）");
+ev("s1w", 10, 11, 1, "+= s0", "c1：accum += inbox(step0)");
+ev("s1g", 11, 11.45, 1, "C2S", "c1：finishRecvs(step0)");
+ev("s1w", 11, 12, 1, "+= s1", "c1：accum += inbox(step1)");
+ev("s1g", 12, 12.45, 1, "C2S", "c1：finishRecvs(step1)");
+ev("s1w", 12, 13, 1, "→ out", "c1 finishFn：写 out");
+
+function warpAlloc(p){
+  const nWork = p.nWarps - 2; let s0 = 0, s1 = 0, s0w;
+  if (p.L === 1){ s0w = 0; }
+  else { s0 = (p.mm ? 1 : p.L) * (p.R - 1); s1 = (p.mm ? 1 : p.L) + p.R - 1; s0w = Math.round(nWork * s0 / (s0 + s1)); s0w = Math.min(s0w, nWork - 1); }
+  return { nWork, s0, s1, s0w, s1w: nWork - s0w };
+}
+const sP = {
+  id: "pipe", tab: "⑥ CTA 内部流水线", vb: [1100, 660], params: { nWarps: 16, L: 4, R: 3, mm: false },
+  controls(div, rerender){
+    const p = sP.params;
+    div.innerHTML = `<label>每 CTA warp 数 <input type="number" id="pw" min="4" max="32" value="${p.nWarps}"></label>
+      <label>lsa.nRanks (L) <input type="number" id="pl" min="1" max="8" value="${p.L}"></label>
+      <label>rail.nRanks (R) <input type="number" id="pr" min="2" max="32" value="${p.R}"></label>
+      <label><input type="checkbox" id="pm" ${p.mm ? "checked" : ""}> multimem（LsaLDMC）</label>
+      <span>（参数只影响上方的 warp 分配；下方时序固定为 R = 3）</span>`;
+    const upd = () => { p.nWarps = Math.max(4, Math.min(32, +div.querySelector("#pw").value || 16)); p.L = Math.max(1, Math.min(8, +div.querySelector("#pl").value || 4));
+      p.R = Math.max(2, Math.min(32, +div.querySelector("#pr").value || 3)); p.mm = div.querySelector("#pm").checked; rerender(); };
+    div.querySelectorAll("input").forEach(i => i.onchange = upd);
+  },
+  init(){ return { t: 0 }; },
+  draw(svg, s, L, sc){
+    const p = sc.params, a = warpAlloc(p);
+    T(svg, 30, 30, "rsAlgoHier：一个 CTA 内的 warp 角色分工与两级流水线", { size: 15, weight: 700 });
+    T(svg, 30, 52, "2 个 stage，各占 1 个 GIN warp 和若干 worker warp；worker 数按两个 stage 的“读量”比例分配（读远多于写）", { size: 12.5, fill: COL.muted });
+    const bw = Math.min(58, 1040 / p.nWarps), by = 74;
+    for (let w = 0; w < p.nWarps; w++){
+      let role = w === 0 ? 0 : (w <= a.s0w ? 1 : (w === a.s0w + 1 ? 3 : 4));
+      const c = LANES[role].color;
+      R(svg, 30 + w * bw, by, bw - 4, 34, c, { rx: 5, op: .9 });
+      T(svg, 30 + w * bw + (bw - 4) / 2, by + 22, `w${w}`, { anchor: "middle", size: bw > 40 ? 11 : 9, fill: "#0b0f15", weight: 700 });
+    }
+    const f1 = p.L === 1 ? "lsa.nRanks == 1：Stage0 没有 worker，GIN warp 直接从用户输入零拷贝 put；其余 worker 全部归 Stage1"
+      : `nWorkWarps = ${p.nWarps} − 2 = ${a.nWork}；s0 = ${p.mm ? "1" : "L"}·(R−1) = ${a.s0}；s1 = ${p.mm ? "1" : "L"} + R − 1 = ${a.s1}；stage0_nWorkWarps = round(${a.nWork}·${a.s0}/${a.s0 + a.s1}) = ${a.s0w}`;
+    T(svg, 30, by + 56, f1, { size: 12, fill: "#c9d1d9", mono: true });
+    T(svg, 30, by + 76, `→ Stage0：1 GIN + ${a.s0w} worker；Stage1：1 GIN + ${a.s1w} worker（min(·, nWorkWarps−1)，保证 Stage1 至少有 1 个 worker）`, { size: 12, fill: COL.muted });
+
+    const gx = 210, gy = 196, lh = 70, sx = 62, x = t => gx + t * sx;
+    T(svg, 30, gy - 12, "时序示意（R = 3，每个 chunk 2 个 step，每批 nSteps = 1；非实测）", { size: 12.5, weight: 600, fill: "#c9d1d9" });
+    LANES.forEach((ln, i) => { const y = gy + i * lh;
+      R(svg, 24, y + 4, 1056, lh - 8, i % 2 ? "#0f141d" : "#121823", { rx: 8 });
+      R(svg, 30, y + 16, 6, lh - 32, ln.color, { rx: 2 });
+      T(svg, 44, y + 30, ln.name, { size: 12.5, weight: 700, fill: ln.color });
+      T(svg, 44, y + 47, ln.sub, { size: 10.5, fill: COL.muted }); });
+    for (let t = 0; t <= 13; t++){ E("line", { x1: x(t), y1: gy, x2: x(t), y2: gy + 5 * lh, stroke: "#1f2735" }, svg);
+      T(svg, x(t), gy + 5 * lh + 16, `${t}`, { anchor: "middle", size: 10, fill: COL.muted, mono: true }); }
+    const now = s.t;
+    EV.forEach(e => { const li = LANES.findIndex(l => l.k === e.lane); const ln = LANES[li]; const y = gy + li * lh + 12;
+      const st = e.t1 <= now ? "done" : (e.t0 < now ? "act" : "todo");
+      const op = st === "todo" ? .16 : (e.c ? .62 : .95);
+      R(svg, x(e.t0) + 1, y, x(e.t1) - x(e.t0) - 2, lh - 24, ln.color, { rx: 5, op, stroke: st === "act" ? "#ffffff" : undefined, sw: 2 });
+      const w = x(e.t1) - x(e.t0);
+      if (w > 40) T(svg, x(e.t0) + w / 2, y + 20, `${e.lab}`, { anchor: "middle", size: 11, fill: "#0b0f15", weight: 700, op: st === "todo" ? .4 : 1 });
+      if (w > 40) T(svg, x(e.t0) + w / 2, y + 36, `chunk${e.c}`, { anchor: "middle", size: 9.5, fill: "#0b0f15", op: st === "todo" ? .35 : .8 });
+      else T(svg, x(e.t0) + w / 2, y + 26, e.lab, { anchor: "middle", size: 9, fill: "#0b0f15", weight: 700, op: st === "todo" ? .4 : 1 }); });
+    E("line", { x1: x(now), y1: gy - 4, x2: x(now), y2: gy + 5 * lh + 4, stroke: COL.accent, "stroke-width": 2.2 }, svg);
+    E("path", { d: `M${x(now) - 6} ${gy - 10} h12 l-6 8 z`, fill: COL.accent }, svg);
+    T(svg, 30, 628, "观察：Stage0 处理 chunk1 的 LSA 规约时，chunk0 的数据还在网络上，Stage1 也在累加，三件事同时进行。chunk 大小默认 128KB（NCCL_SYM_RS_GIN_CHUNK_SIZE），", { size: 11.5, fill: COL.muted });
+    T(svg, 30, 646, "每 block accum = 2×chunk，inbox 容量按带宽时延积 ginBw × (ginLat + smLat) 估算，所以单个 CTA 内能有足够多的 put 同时在途。", { size: 11.5, fill: COL.muted });
+  },
+  steps: [],
+  legend: `实色 = chunk0，半透明 = chunk1，白框 = 当前时间片正在执行。上方 warp 条带的颜色与下方泳道一一对应。`,
+};
+(function buildPSteps(){
+  sP.steps.push({ title: "初始：warp 角色与两级流水线",
+    desc: `<code>rsAlgoHier</code> 把一个 CTA 的 warp 分成 <b>2 个 stage × 2 种角色</b>：<ul>
+      <li><b>Stage0</b>（发送侧）：GIN warp 负责 <code>postSends</code>；worker 负责节点内规约，写入 outbox</li>
+      <li><b>Stage1</b>（接收侧）：GIN warp 负责 <code>finishRecvs</code> 归还 credit；worker 负责 accum 的累加和写出</li></ul>
+      两个 stage 用各自的 <code>ncclCoopWarpSpan</code> 同步，彼此只通过 inbox 和 outbox 的信号耦合，所以能跨 chunk 流水执行。可以修改上方参数，观察 warp 分配的变化。`,
+    code: `int nWorkWarps = blockDim.x / 32 - 2;
+int stage0_work = (multimem ? 1 : lsa.nRanks) * (rail.nRanks - 1);
+int stage1_work = (multimem ? 1 : lsa.nRanks) + rail.nRanks - 1;
+stage0_nWorkWarps = __float2int_rn(__fdividef(nWorkWarps * stage0_work,
+                                              stage0_work + stage1_work));
+stage0_nWorkWarps = min(stage0_nWorkWarps, nWorkWarps - 1);
+int stage = threadIdx.x / 32 < 1 + stage0_nWorkWarps ? 0 : 1;
+bool roleIsWorker = 32 <= coopStage.thread_rank();` });
+  for (let t = 1; t <= 13; t++){
+    const act = EV.filter(e => e.t0 < t && e.t1 > t - 1);
+    sP.steps.push({ title: `时间片 t ∈ [${t - 1}, ${t})`,
+      desc: `<ul>${act.map(e => { const ln = LANES.find(l => l.k === e.lane); return `<li><b style="color:${ln.color}">${ln.name}</b>：${e.d}</li>`; }).join("")}</ul>`,
+      code: `// skeleton(initFn, stepFn, finishFn)
+while (loopElts != 0) {
+  int nChunkElts = min(loopElts, (size_t)maxChunkElts);
+  int nSteps = min(rail.nRanks - 1, 1 << (nBufs_log2 - 1));
+  int step = 0;
+  initFn(nChunkElts, loopInput);
+  do {
+    nSteps = min(nSteps, rail.nRanks - 1 - step);
+    stepFn(step, nSteps, nChunkElts, loopInput);
+    step += nSteps;
+  } while (step != rail.nRanks - 1);
+  finishFn(nChunkElts, loopOutput);
+  inbox.endRound(cta);
+  loopInput += nChunkElts; loopOutput += nChunkElts; loopElts -= nChunkElts;
+}`,
+      commit(s){ s.t = t; }, tween: (s, p) => ({ t: s.t + p }) });
+  }
+})();
+
+/* ============================== 播放引擎 ============================== */
+const SCENES = [sLD, sTMA, sMC, sLL, sX, sP];
+const svg = document.getElementById("svg");
+let SC = null, IDX = 0, PLAY = false, SPEED = 1, ANIM = null, TIMER = null;
+
+function clearSvg(){ while (svg.firstChild) svg.removeChild(svg.firstChild); }
+function stateAt(sc, i){ const s = sc.init(); for (let j = 0; j <= i; j++){ const c = sc.steps[j].commit; if (c) c(s, sc); } return s; }
+function flowsAt(sc, i){ if (i <= 0) return []; const f = sc.steps[i].flows; return f ? f(stateAt(sc, i - 1), sc.L, sc) : []; }
+function drawScene(st){ clearSvg(); SC.draw(svg, st, SC.L, SC); return E("g", { "pointer-events": "none" }, svg); }
+function stopAnim(){ if (ANIM) cancelAnimationFrame(ANIM); ANIM = null; if (TIMER) clearTimeout(TIMER); TIMER = null; }
+function render(){
+  stopAnim();
+  const ov = drawScene(stateAt(SC, IDX));
+  const fl = flowsAt(SC, IDX); fl.forEach(f => updFlow(f, mkFlowEls(ov, f), 1, true));
+  panel();
+}
+function panel(){
+  const st = SC.steps[IDX];
+  document.getElementById("stepno").textContent = `STEP ${IDX} / ${SC.steps.length - 1}`;
+  document.getElementById("stitle").textContent = st.title;
+  document.getElementById("sdesc").innerHTML = typeof st.desc === "function" ? st.desc(SC) : (st.desc || "");
+  document.getElementById("scode").textContent = st.code || "";
+  const pg = document.getElementById("progress"); pg.innerHTML = "";
+  SC.steps.forEach((_, i) => { const d = document.createElement("i"); d.className = i < IDX ? "done" : (i === IDX ? "cur" : ""); d.title = SC.steps[i].title;
+    d.onclick = () => { PLAY = false; updPlay(); IDX = i; render(); }; pg.appendChild(d); });
+}
+function next(){
+  if (IDX >= SC.steps.length - 1){ PLAY = false; updPlay(); return; }
+  stopAnim();
+  const from = IDX, to = IDX + 1, step = SC.steps[to];
+  const st = stateAt(SC, from), flows = flowsAt(SC, to);
+  IDX = to; panel();
+  let ov = drawScene(st); let els = flows.map(f => mkFlowEls(ov, f));
+  const dur = (flows.length || step.tween ? 1600 : 500) / SPEED, t0 = performance.now();
+  const frame = now => {
+    const p = Math.min(1, (now - t0) / dur);
+    if (step.tween){ ov = drawScene(step.tween(st, p)); els = flows.map(f => mkFlowEls(ov, f)); }
+    els.forEach((e, i) => updFlow(flows[i], e, p, false));
+    if (p < 1) ANIM = requestAnimationFrame(frame);
+    else { ANIM = null; render(); if (PLAY) TIMER = setTimeout(next, 700 / SPEED); }
+  };
+  ANIM = requestAnimationFrame(frame);
+}
+function prev(){ PLAY = false; updPlay(); IDX = Math.max(0, IDX - 1); render(); }
+function reset(){ PLAY = false; updPlay(); IDX = 0; render(); }
+function togglePlay(){
+  PLAY = !PLAY; updPlay();
+  if (PLAY){ if (IDX >= SC.steps.length - 1){ IDX = 0; render(); } next(); }
+  else render();
+}
+function updPlay(){ document.getElementById("bPlay").textContent = PLAY ? "⏸ 暂停" : "▶ 播放"; }
+function selectScene(sc){
+  stopAnim(); PLAY = false; updPlay();
+  SC = sc; SC.L = SC.layout ? SC.layout() : {};
+  svg.setAttribute("viewBox", `0 0 ${SC.vb[0]} ${SC.vb[1]}`);
+  const cd = document.getElementById("sceneControls"); cd.innerHTML = "";
+  if (SC.controls) SC.controls(cd, () => render());
+  document.getElementById("legend").innerHTML = SC.legend || "";
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("on", b.dataset.id === sc.id));
+  IDX = 0; render();
+  history.replaceState(null, "", "#" + sc.id);
+}
+const tabs = document.getElementById("tabs");
+SCENES.forEach(sc => { const b = document.createElement("button"); b.textContent = sc.tab; b.dataset.id = sc.id; b.onclick = () => selectScene(sc); tabs.appendChild(b); });
+document.getElementById("bNext").onclick = () => { PLAY = false; updPlay(); next(); };
+document.getElementById("bPrev").onclick = prev;
+document.getElementById("bReset").onclick = reset;
+document.getElementById("bPlay").onclick = togglePlay;
+const spd = document.getElementById("speed");
+spd.oninput = () => { SPEED = +spd.value; document.getElementById("speedv").textContent = SPEED + "×"; };
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === "ArrowRight"){ PLAY = false; updPlay(); next(); }
+  else if (e.key === "ArrowLeft") prev();
+  else if (e.key === " "){ e.preventDefault(); togglePlay(); }
+  else if (e.key === "Home") reset();
+});
+selectScene(SCENES.find(s => "#" + s.id === location.hash) || SCENES[0]);
+</script>
+</body>
+</html>

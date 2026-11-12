@@ -1,0 +1,1222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NCCL Symmetric AllGather 通信过程演示</title>
+<style>
+  :root {
+    --bg: #0c1018;
+    --panel: #121925;
+    --panel2: #172031;
+    --line: #253049;
+    --text: #d9e2f1;
+    --muted: #8593aa;
+    --accent: #5b9dff;
+    --ok: #3ddc84;
+    --warn: #ffb020;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Segoe UI", sans-serif;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    display: flex; align-items: center; gap: 20px; padding: 10px 18px;
+    border-bottom: 1px solid var(--line); background: #0e141f; flex-wrap: wrap;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .2px; white-space: nowrap; }
+  header h1 span { color: var(--muted); font-weight: 400; margin-left: 6px; }
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; }
+  .tab {
+    padding: 5px 12px; border-radius: 7px; border: 1px solid var(--line); background: transparent;
+    color: var(--muted); cursor: pointer; font-size: 13px; font-family: inherit;
+  }
+  .tab:hover { color: var(--text); border-color: #36446a; }
+  .tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  main { flex: 1; display: flex; min-height: 0; }
+  .stage { flex: 1; display: flex; flex-direction: column; min-width: 0; padding: 12px 14px 0; }
+  .stage-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; flex-wrap: wrap; }
+  .stage-head h2 { font-size: 16px; margin: 0; font-weight: 600; }
+  .stage-head .sub { color: var(--muted); font-size: 12.5px; }
+  .svgwrap { flex: 1; min-height: 0; position: relative; }
+  svg#svg {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    background: radial-gradient(1200px 600px at 50% 40%, #121a2a 0%, #0d131e 70%);
+    border: 1px solid var(--line); border-radius: 12px;
+  }
+  .controls { display: flex; align-items: center; gap: 8px; padding: 10px 0 12px; flex-wrap: wrap; }
+  .ctl {
+    height: 32px; min-width: 36px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--panel2); color: var(--text); cursor: pointer; font-size: 13px; font-family: inherit;
+  }
+  .ctl:hover { border-color: #3a4a72; }
+  .ctl.primary { background: var(--accent); border-color: var(--accent); color: #fff; min-width: 84px; }
+  .speed { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12.5px; margin-left: 6px; }
+  .speed input { width: 110px; accent-color: var(--accent); }
+  .opts { display: flex; gap: 14px; align-items: center; margin-left: 10px; color: var(--muted); font-size: 12.5px; flex-wrap: wrap; }
+  .opts label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .opts input { accent-color: var(--accent); }
+  .opts select { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-family: inherit; }
+  .progress { color: var(--muted); font-size: 12.5px; margin-left: auto; font-variant-numeric: tabular-nums; }
+  aside {
+    width: 420px; border-left: 1px solid var(--line); background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .info { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); overflow-y: auto; flex: 1 1 60%; min-height: 0; }
+  .info .idx { color: var(--accent); font-size: 12px; font-weight: 600; letter-spacing: .5px; }
+  .info h3 { margin: 2px 0 8px; font-size: 15px; }
+  .info .desc { color: #c6d0e2; font-size: 13.3px; }
+  .info .desc p { margin: 0 0 8px; }
+  .info .desc b { color: #fff; }
+  .info .desc code, .steps code { background: #0d1320; border: 1px solid #222c42; padding: 0 4px; border-radius: 4px; font-size: 12px; color: #9fc3ff; }
+  .info .ref { margin-top: 10px; font-size: 11.5px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+  pre.code {
+    margin: 4px 0 0; padding: 10px 12px; background: #0a0f19; border: 1px solid #1f2940; border-radius: 8px;
+    font: 11.5px/1.55 ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: #c8d3e8; overflow-x: auto; white-space: pre;
+  }
+  pre.code .k { color: #ff8fb1; } pre.code .c { color: #6b7a95; } pre.code .f { color: #7cc4ff; }
+  .steps { position: relative; list-style: none; margin: 0; padding: 8px 8px 12px; overflow-y: auto; flex: 1 1 40%; min-height: 0; counter-reset: s; }
+  .steps li {
+    padding: 6px 10px 6px 34px; border-radius: 7px; cursor: pointer; color: var(--muted); font-size: 12.8px;
+    position: relative; counter-increment: s;
+  }
+  .steps li::before {
+    content: counter(s); position: absolute; left: 8px; top: 7px; width: 18px; height: 18px; border-radius: 50%;
+    background: #1d2639; color: var(--muted); font-size: 10.5px; text-align: center; line-height: 18px;
+  }
+  .steps li:hover { background: #182134; color: var(--text); }
+  .steps li.done { color: #aeb9cc; }
+  .steps li.done::before { background: #24406b; color: #cfe1ff; }
+  .steps li.cur { background: #1b2a45; color: #fff; }
+  .steps li.cur::before { background: var(--accent); color: #fff; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; padding: 8px 16px; border-top: 1px solid var(--line); font-size: 11.5px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 4px; }
+  .legend i { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+  .kbd { color: var(--muted); font-size: 11.5px; padding: 0 16px 8px; }
+  @media (max-width: 1100px) {
+    body { overflow: auto; height: auto; }
+    main { flex-direction: column; }
+    .stage { flex: none; height: 68vh; min-height: 420px; }
+    aside { width: auto; border-left: none; border-top: 1px solid var(--line); }
+    .info, .steps { flex: none; overflow: visible; }
+  }
+  /* svg text classes */
+  .t-title { fill: #e9f0fb; font-size: 14px; font-weight: 600; }
+  .t-lbl { fill: #9aa8c0; font-size: 11.5px; }
+  .t-sm { fill: #8794ab; font-size: 10px; }
+  .t-xs { fill: #7d8aa2; font-size: 9px; }
+  .t-in { fill: #0b1020; font-size: 9px; font-weight: 600; }
+  .t-big { fill: #dfe7f5; font-size: 13px; font-weight: 600; }
+  .t-mute { fill: #66748e; font-size: 11.5px; }
+  .t-warn { fill: #ffb020; font-size: 11px; font-weight: 600; }
+  .t-ok { fill: #3ddc84; font-size: 11px; font-weight: 600; }
+  .t-bad { fill: #ff6b6b; font-size: 11px; font-weight: 600; }
+  .t-status { fill: #a9b6cc; font-size: 9.5px; font-family: ui-monospace, Menlo, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>NCCL Symmetric AllGather<span>通信过程动画演示</span></h1>
+  <div class="tabs" id="tabs"></div>
+</header>
+<main>
+  <section class="stage">
+    <div class="stage-head"><h2 id="sceneTitle"></h2><span class="sub" id="sceneSub"></span></div>
+    <div class="svgwrap"><svg id="svg" viewBox="0 0 1000 640" preserveAspectRatio="xMidYMid meet"></svg></div>
+    <div class="controls">
+      <button class="ctl" id="bReset" title="回到开头 (Home)">⏮</button>
+      <button class="ctl" id="bPrev" title="上一步 (←)">◀</button>
+      <button class="ctl primary" id="bPlay" title="播放/暂停 (Space)">▶ 播放</button>
+      <button class="ctl" id="bNext" title="下一步 (→)">▶|</button>
+      <div class="speed">速度 <input type="range" id="speed" min="0.25" max="3" step="0.25" value="1"><span id="speedV">1.0×</span></div>
+      <div class="opts" id="opts"></div>
+      <div class="progress" id="progress"></div>
+    </div>
+  </section>
+  <aside>
+    <div class="info">
+      <div class="idx" id="stepIdx"></div>
+      <h3 id="stepTitle"></h3>
+      <div class="desc" id="stepDesc"></div>
+      <pre class="code" id="stepCode"></pre>
+      <div class="ref" id="stepRef"></div>
+    </div>
+    <ul class="steps" id="stepList"></ul>
+    <div class="legend" id="legend"></div>
+    <div class="kbd">快捷键：Space 播放/暂停 · ← → 单步 · Home 重置 · 点击右侧步骤跳转</div>
+  </aside>
+</main>
+
+<script>
+'use strict';
+/* =====================================================================
+ * Tiny SVG helpers
+ * ===================================================================== */
+const NS = 'http://www.w3.org/2000/svg';
+const PAL = ['#4f8cff', '#ff6b6b', '#2ec4b6', '#ffb020', '#b07cff', '#00c2ff',
+             '#ff5fb0', '#8bd450', '#ff8c42', '#8f9bff', '#e9c46a', '#3fd0a0'];
+const EMPTY = '#1a2234';
+
+function S(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  if (attrs) for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function T(parent, x, y, s, cls, attrs) {
+  const e = S('text', Object.assign({ x, y, class: cls || 't-lbl' }, attrs || {}), parent);
+  e.textContent = s;
+  return e;
+}
+function cell(parent, x, y, w, h, color, extra) {
+  return S('rect', Object.assign({
+    x, y, width: w, height: h, rx: 2.5,
+    fill: color == null ? EMPTY : color,
+    stroke: color == null ? '#2a3550' : 'rgba(255,255,255,.28)', 'stroke-width': 1,
+  }, extra || {}), parent);
+}
+function box(parent, x, y, w, h, extra) {
+  return S('rect', Object.assign({ x, y, width: w, height: h, rx: 10, fill: '#141c2b', stroke: '#2a3653', 'stroke-width': 1.2 }, extra || {}), parent);
+}
+const LAMP = { idle: '#3a4560', arrived: '#ffb020', passed: '#3ddc84', done: '#5b9dff' };
+const LAMP_TXT = { idle: '未进入', arrived: 'arrived', passed: 'wait 通过', done: 'sync 完成' };
+function lamp(parent, x, y, st) {
+  S('circle', { cx: x, cy: y, r: 7, fill: LAMP[st], stroke: '#0009', 'stroke-width': 1.5 }, parent);
+  T(parent, x - 12, y + 4, LAMP_TXT[st], 't-sm', { 'text-anchor': 'end' });
+}
+function grid2(n, m, f) { return Array.from({ length: n }, (_, i) => Array.from({ length: m }, (_, j) => f(i, j))); }
+function hl(code) {
+  // very small highlighter: comments, keywords, function calls
+  const esc = code.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return esc.split('\n').map(line => {
+    const ci = line.indexOf('//');
+    let head = ci >= 0 ? line.slice(0, ci) : line;
+    const tail = ci >= 0 ? '<span class="c">' + line.slice(ci) + '</span>' : '';
+    head = head.replace(/\b(for|while|if|else|int|size_t|bool|auto|return|constexpr|uint32_t|uint64_t)\b/g, '<span class="k">$1</span>')
+               .replace(/\b([A-Za-z_][A-Za-z0-9_]*)(?=\()/g, '<span class="f">$1</span>');
+    return head + tail;
+  }).join('\n');
+}
+
+/* =====================================================================
+ * Scene 1: AllGather_ST  (NVLink P2P stores)
+ * ===================================================================== */
+const SceneST = (() => {
+  const W = 330, H = 200;
+  const G = [[70, 40], [600, 40], [600, 380], [70, 380]].map(([x, y]) => ({ x, y }));
+  const CX = 92;
+  const inCell = (g, i) => [G[g].x + CX + i * 27, G[g].y + 48];
+  const regCell = (g, i) => [G[g].x + CX + i * 27, G[g].y + 84];
+  const slotX = (g, s) => G[g].x + CX + s * 58;
+  const outY = g => G[g].y + 126;
+  const outCellC = (g, s, i) => [slotX(g, s) + i * 13 + 6, outY(g) + 9];
+  const slotC = (g, s) => [slotX(g, s) + 25.5, outY(g) + 9];
+  const regsC = g => [G[g].x + CX + 52, G[g].y + 93];
+  const lampP = g => [G[g].x + W - 22, G[g].y + 22];
+  const ctr = g => [G[g].x + W / 2, G[g].y + H / 2];
+
+  function init(o) {
+    const out = grid2(4, 4, () => null);
+    if (o.inPlace) for (let g = 0; g < 4; g++) out[g][g] = g;
+    return { regs: [0, 0, 0, 0], bar: Array(4).fill('idle'), out, active: null };
+  }
+
+  function draw(root, st, o) {
+    for (let a = 0; a < 4; a++) for (let b = a + 1; b < 4; b++) {
+      const [x1, y1] = ctr(a), [x2, y2] = ctr(b);
+      S('line', { x1, y1, x2, y2, stroke: '#24365a', 'stroke-width': 7, 'stroke-linecap': 'round', opacity: .55 }, root);
+    }
+    T(root, 500, 318, 'NVLink / NVSwitch 点对点（LSA team 内任意两卡可直接 ld/st）', 't-mute', { 'text-anchor': 'middle' });
+    for (let g = 0; g < 4; g++) {
+      const { x, y } = G[g];
+      box(root, x, y, W, H, st.active && st.active.includes(g) ? { stroke: '#4f8cff' } : null);
+      T(root, x + 14, y + 26, `GPU ${g}`, 't-title');
+      T(root, x + 70, y + 26, `rank ${g}`, 't-sm');
+      const [lx, ly] = lampP(g); lamp(root, lx, ly, st.bar[g]);
+      // input
+      T(root, x + 14, y + 61, 'input', 't-lbl');
+      if (!o.inPlace) {
+        for (let i = 0; i < 4; i++) { const [cx, cy] = inCell(g, i); cell(root, cx, cy, 24, 18, PAL[g]); T(root, cx + 12, cy + 12.5, 'p' + i, 't-in', { 'text-anchor': 'middle' }); }
+      } else {
+        T(root, x + CX, y + 61, `≡ output 中第 R${g} 槽（in-place）`, 't-sm');
+      }
+      // regs
+      T(root, x + 14, y + 97, 'tmp[] 寄存器', 't-lbl');
+      for (let i = 0; i < 4; i++) {
+        const [cx, cy] = regCell(g, i);
+        cell(root, cx, cy, 24, 18, st.regs[g] ? PAL[g] : null, { 'stroke-dasharray': st.regs[g] ? '' : '3 2' });
+      }
+      T(root, x + CX + 112, y + 97, 'UnrollPacks=4 × 16B / lane', 't-xs');
+      // output
+      T(root, x + 14, y + 139, 'output', 't-lbl');
+      for (let s = 0; s < 4; s++) {
+        for (let i = 0; i < 4; i++) {
+          const v = st.out[g][s];
+          cell(root, slotX(g, s) + i * 13, outY(g), 12, 18, v == null ? null : PAL[v]);
+        }
+        T(root, slotX(g, s) + 25.5, outY(g) + 34, `R${s} 槽`, s === g ? 't-warn' : 't-sm', { 'text-anchor': 'middle' });
+      }
+      T(root, x + 14, y + H - 12, `output + R${g}·nAllElts 是本 rank 要写到所有人的位置`, 't-xs');
+    }
+  }
+
+  function steps(o) {
+    const out = [];
+    const sig = [];
+    for (let g = 0; g < 4; g++) for (let h = 0; h < 4; h++) if (g !== h) sig.push({ pts: [lampP(g), lampP(h)], kind: 'sig' });
+    out.push({
+      title: 'bar.arrive(relaxed)：宣告"我已进入 kernel"',
+      desc: `<p>每个 CTA 先对 LSA barrier 做 <b>arrive</b>（relaxed），只发信号、不等待。</p>
+             <p>含义：我已经进入本次 AllGather，<b>我的 output 可以被别人覆盖</b>了。这里还不 wait，因为后面可以先把首批数据从本地 HBM 读进寄存器，用读的延迟去盖住等 barrier 的时间。</p>`,
+      code: `ncclLsaBarrierSession<ncclCoopCta> bar{ncclCoopCta(), handler.comm,
+                                    ncclTeamTagLsa(), blockIdx.x};
+bar.arrive(ncclCoopCta(), cuda::memory_order_relaxed);`,
+      ref: 'src/device/symmetric/all_gather.cuh:252-255',
+      moves: sig, dur: 0.8,
+      apply: s => s.bar.fill('arrived'),
+    });
+    const pre = [];
+    for (let g = 0; g < 4; g++) for (let i = 0; i < 4; i++) {
+      const src = o.inPlace ? outCellC(g, g, i) : [inCell(g, i)[0] + 12, inCell(g, i)[1] + 9];
+      const [rx, ry] = regCell(g, i);
+      pre.push({ pts: [src, [rx + 12, ry + 9]], color: PAL[g], w: 12, h: 9 });
+    }
+    out.push({
+      title: '预取首个 tile 到寄存器（与 barrier 等待重叠）',
+      desc: `<p>每个 lane 从<b>本地</b> input 读 <code>UnrollPacks</code> 个 16B pack 到 <code>tmp[]</code>：lane i 读 pack i, i+32, i+64, i+96。一个 warp 一次处理 4×32×16B = <b>2KB</b> 的 tile。</p>
+             <p>${o.inPlace ? 'in-place 时 input 就是 output 的第 rank 槽，所以从那里读。' : 'out-of-place：input 与 output 是两块对称窗口。'}</p>
+             <p>在 SM100 上的 TMA 版本里，改由 lane0 发 <code>cp.async.bulk</code> 把 tile 搬进 shared memory，再 bulk store 到每个对端。</p>`,
+      code: `if (0 < nIters) {
+  for (int u = 0; u < UnrollPacks; u++)
+    tmp[u] = inpPacks[u * WARP_SIZE];   // local HBM load
+}
+if (waitNeeded) bar.wait(ncclCoopCta(), cuda::memory_order_acquire);`,
+      ref: 'src/device/symmetric/all_gather.cuh:59-81',
+      moves: pre, dur: 0.8,
+      apply: s => { s.regs = [1, 1, 1, 1]; },
+    });
+    out.push({
+      title: 'bar.wait(acquire)：等所有 LSA peer 都进入',
+      desc: `<p>等到全部 peer 都 arrive 之后才开始写，否则可能把对端<b>上一次 kernel 还在读</b>的 output 覆盖掉。acquire 语义保证之后看到的是对端的最新状态。</p>
+             <p><code>waitNeeded</code> 只在第一次进入 <code>bcastDeep</code> 时为 true，后面的分档和后续 work 都不会再等。</p>`,
+      code: `if (waitNeeded) bar.wait(ncclCoopCta(), cuda::memory_order_acquire);`,
+      ref: 'src/device/symmetric/all_gather.cuh:81',
+      moves: [], dur: 0.5,
+      apply: s => s.bar.fill('passed'),
+    });
+    // peer groups exactly as in bcastDeep
+    let dr = o.inPlace ? 1 : 0;
+    const groups = [];
+    while (dr + 2 <= 4) { groups.push([dr, dr + 1]); dr += 2; }
+    if (dr < 4) groups.push([dr]);
+    groups.forEach((grp, gi) => {
+      const mv = [];
+      for (let g = 0; g < 4; g++) grp.forEach((d, j) => {
+        const dst = (g + d) % 4;
+        mv.push({ pts: [regsC(g), slotC(dst, g)], color: PAL[g], w: 22, h: 12, delay: j * 0.18 });
+      });
+      const pairs = [0, 1, 2, 3].map(g => `R${g}→{${grp.map(d => 'R' + (g + d) % 4).join(',')}}`).join('，');
+      out.push({
+        title: `写对端：peer 组 ${gi}（dr = ${grp.join(', ')}）${grp.length === 1 ? ' · partial' : ''}`,
+        desc: `<p>按 <code>UnrollPeers=2</code> 一组展开，每个 rank 从 <code>rank+dr</code> 开始轮转：${pairs}。</p>
+               <p>每次写都是 <code>outPacks.lsaPtr(r)[u*32] = tmp[u]</code>，即通过 <b>LSA flat 地址</b>（<code>lsaFlatBase + r·stride4G + offset</code>）直接 st 到对端 HBM 的 <b>R${'{rank}'} 槽</b>。</p>
+               <p>每个目的 GPU 在这一组里正好被写 ${grp.length} 次，<b>没有热点</b>。${grp.length === 1 ? '这是 nRanks−dr &lt; UnrollPeers 时剩下的 partial 组。' : ''}${o.inPlace ? '' : (gi === 0 ? '（out-of-place 时 dr=0 也就是写自己的 output。）' : '')}</p>`,
+        code: `int dr = inPlace ? 1 : 0;
+int r = rank + dr; if (r == nRanks) r = 0;
+for (; dr + UnrollPeers <= nRanks; dr += UnrollPeers) {
+  for (int ur = 0; ur < UnrollPeers; ur++) {
+    for (int u = 0; u < UnrollPacks; u++)
+      outPacks.lsaPtr(r)[u * WARP_SIZE] = tmp[u];  // NVLink P2P store
+    if (++r == nRanks) r = 0;
+  }
+}
+// partial pass handles the remaining (< UnrollPeers) peers`,
+        ref: 'src/device/symmetric/all_gather.cuh:83-112',
+        moves: mv, dur: 1.2,
+        pre: s => { s.active = [0, 1, 2, 3]; },
+        apply: s => { for (let g = 0; g < 4; g++) grp.forEach(d => { s.out[(g + d) % 4][g] = g; }); s.active = null; },
+      });
+    });
+    const sig2 = [];
+    for (let g = 0; g < 4; g++) for (let h = 0; h < 4; h++) if (g !== h) sig2.push({ pts: [lampP(g), lampP(h)], kind: 'sig' });
+    out.push({
+      title: 'bar.sync(release)：收尾屏障',
+      desc: `<p>写完以后做一次完整的 <b>sync（release）</b>：保证本 rank 的所有 P2P store 在对端可见之后，大家才一起退出 kernel。</p>
+             <p>这时每个 GPU 的 output 都已经凑齐 R0..R3 四个槽。真实 kernel 里每个 warp 会循环处理很多 tile（见"ST 线程映射"页），并按对齐程度依次走 TMA-256B / 16B / 4B / 逐元素几档。</p>`,
+      code: `bar.sync(ncclCoopCta(), cuda::memory_order_release);`,
+      ref: 'src/device/symmetric/all_gather.cuh:276',
+      moves: sig2, dur: 0.8,
+      apply: s => { s.bar.fill('done'); s.regs = [0, 0, 0, 0]; },
+    });
+    return out;
+  }
+
+  return {
+    id: 'st', tab: '单机 · ST', title: 'AllGather_ST / TmaST：NVLink P2P 直写（push）',
+    sub: '每个 rank 本地读一次，再 st 到所有 peer 的 output[rank] 槽',
+    intro: `<p>场景：<b>单机 4 GPU</b>，全部在同一个 LSA team 里（任意两卡 NVLink 直连）。</p>
+            <p>symmetric 窗口在每个 rank 上偏移一致，所以设备端只用 <code>(window, offset)</code> 就能算出任意 peer 上的同一地址，<b>不需要 proxy、不需要中间 FIFO</b>。</p>
+            <p>每个 GPU 上方块的颜色代表数据的<b>来源 rank</b>。右上角圆点是 LSA barrier 的状态。点 ▶ 开始。</p>`,
+    nColors: 4,
+    options: [{ key: 'inPlace', label: 'in-place', type: 'check', def: false }],
+    init, draw, steps,
+  };
+})();
+
+/* =====================================================================
+ * Scene 2: thread → tile mapping & alignment tiers
+ * ===================================================================== */
+const SceneMap = (() => {
+  const NB = 3, NW = 4, NT = 36;
+  const TW = 70, TH = 38, GAP = 6, X0 = 70, Y0 = 72;
+  const BCOL = [PAL[0], PAL[2], PAL[3]];
+  function init() { return { iter: -1, lane: false, tier: false }; }
+  function draw(root, st) {
+    T(root, 30, 40, '① 线程映射：t = lane + 32·(block + nBlocks·warp)，按 warp-tile 轮转（nBlocks=3，每 block 4 warp）', 't-big');
+    for (let it = 0; it < 3; it++) T(root, 30, Y0 + it * (TH + 10) + 24, `iter ${it}`, 't-sm');
+    for (let t = 0; t < NT; t++) {
+      const it = Math.floor(t / 12), wg = t % 12, b = wg % NB, w = Math.floor(wg / NB);
+      const x = X0 + wg * (TW + GAP), y = Y0 + it * (TH + 10);
+      const state = st.iter < 0 ? 'idle' : it < st.iter ? 'done' : it === st.iter ? 'cur' : 'todo';
+      const op = state === 'cur' ? 1 : state === 'done' ? 0.45 : state === 'idle' ? 0.6 : 0.14;
+      S('rect', { x, y, width: TW, height: TH, rx: 5, fill: BCOL[b], 'fill-opacity': op, stroke: state === 'cur' ? '#fff' : BCOL[b], 'stroke-width': state === 'cur' ? 2 : 1 }, root);
+      T(root, x + TW / 2, y + 15, `T${t}`, state === 'cur' || state === 'idle' ? 't-in' : 't-xs', { 'text-anchor': 'middle' });
+      T(root, x + TW / 2, y + 29, `b${b}·w${w}`, state === 'cur' || state === 'idle' ? 't-in' : 't-xs', { 'text-anchor': 'middle' });
+    }
+    T(root, X0, Y0 + 3 * (TH + 10) + 8, '每个 tile = 一个 warp 一次迭代处理的 UnrollPacks×32×16B = 2KB；颜色 = 所属 block。相邻 tile 落在不同 block 上，各 block 负载均匀（chunks -= chunks % nBlocks）。', 't-sm');
+
+    // ② lane layout
+    const LY = 268;
+    T(root, 30, LY, '② 一个 tile 内部：lane i 负责 pack i, i+32, i+64, i+96（16B/pack）→ 每行 32 lane 合并成连续 512B 访问', 't-big');
+    const CW = 25, CH = 20, LX = 90;
+    for (let u = 0; u < 4; u++) {
+      T(root, 40, LY + 28 + u * (CH + 4) + 14, `u=${u}`, 't-sm');
+      for (let l = 0; l < 32; l++) {
+        const lane0 = st.lane && l === 0, row0 = st.lane && u === 0;
+        const fill = lane0 ? '#ffb020' : row0 ? '#2b5bb8' : '#1d2740';
+        S('rect', { x: LX + l * (CW + 2), y: LY + 28 + u * (CH + 4), width: CW, height: CH, rx: 3, fill, stroke: '#2f3b5a' }, root);
+        if (u === 0 && l % 4 === 0) T(root, LX + l * (CW + 2) + CW / 2, LY + 22, `L${l}`, 't-xs', { 'text-anchor': 'middle' });
+      }
+    }
+    if (st.lane) {
+      T(root, LX, LY + 28 + 4 * (CH + 4) + 14, '橙色 = lane 0 的 4 个 pack（tmp[0..3]）；蓝色行 = u=0 时整个 warp 的一次合并访存（32×16B=512B）', 't-warn');
+    }
+
+    // ③ tiers
+    const TY = 452;
+    T(root, 30, TY, '③ 按对齐程度分档（bcast()）：从快到慢依次把 buffer 交给不同的 bcastDeep 实例，最后 bcastEnds 逐元素处理头尾', 't-big');
+    const segs = [
+      { w: 34, c: '#5b6680', a: 'pre', b: '到 16B/256B 对齐' },
+      { w: 330, c: '#b07cff', a: 'Tier A：TMA deep', b: '256B 对齐 · 16 pack/lane · 32KB chunk · SM100+' },
+      { w: 250, c: '#4f8cff', a: 'Tier B：16B pack', b: '16B 对齐 · 4 pack/lane · 8KB chunk' },
+      { w: 150, c: '#2ec4b6', a: 'Tier C：4B pack', b: '4B 对齐 · UnrollPeers=4' },
+      { w: 70, c: '#5b6680', a: 'suffix', b: '不足一个 chunk' },
+    ];
+    let x = 70;
+    segs.forEach((s, i) => {
+      S('rect', { x, y: TY + 18, width: s.w, height: 34, rx: 4, fill: s.c, 'fill-opacity': st.tier ? 0.9 : 0.25, stroke: s.c }, root);
+      T(root, x + s.w / 2, TY + 40, s.a, st.tier ? 't-in' : 't-sm', { 'text-anchor': 'middle' });
+      if (st.tier) T(root, x + s.w / 2, TY + 70 + (i % 2) * 14, s.b, 't-xs', { 'text-anchor': 'middle' });
+      x += s.w + 3;
+    });
+    if (st.tier) T(root, 70, TY + 112, '每档只取 chunks − chunks % nBlocks 个整 chunk，余下的交给下一档；第一个真正执行的档负责 bar.wait（waitNeeded）。', 't-sm');
+  }
+  function steps() {
+    const out = [];
+    for (let it = 0; it < 3; it++) {
+      out.push({
+        title: `迭代 ${it}：12 个 warp 同时各处理一个 tile`,
+        desc: `<p>线程编号 <code>t = flattenIx(lane, 32, block, nBlocks, warp, nWarps)</code> = lane + 32·(block + nBlocks·warp)。所以第 k 个 tile 属于 <b>block = k mod 3</b>、<b>warp = ⌊(k mod 12)/3⌋</b>。</p>
+               <p>每次迭代所有 warp 各前进 <code>wn</code>（总 warp 数）个 tile：<code>inpPacks += wn*UnrollPacks*32</code>。${it === 0 ? '第 0 次迭代的 load 在 bar.wait 之前就已经发出。' : ''}</p>
+               <p>每个 tile 被 load 一次，然后 store 到 nRanks 个 peer（见"单机 · ST"页）。</p>`,
+        code: `int bt = flattenIx(threadIdx.x % WARP_SIZE, WARP_SIZE,
+                   block, nBlocks,
+                   threadIdx.x / WARP_SIZE, blockDim.x / WARP_SIZE);
+// inside bcastDeep:
+inpPacks += intptr_t(wn) * UnrollPacks * WARP_SIZE;
+outPacks += intptr_t(wn) * UnrollPacks * WARP_SIZE;
+nIters -= wn;`,
+        ref: 'src/device/symmetric/all_gather.cuh:268-270, 114-117',
+        moves: [], dur: 0.7,
+        apply: s => { s.iter = it; },
+      });
+    }
+    out.push({
+      title: 'lane 内部布局：保证合并访存',
+      desc: `<p>每个 lane 的指针初始偏移是 <code>w*UnrollPacks*32 + lane</code>，第 u 个 pack 在 <code>+ u*32</code>。</p>
+             <p>所以对固定的 u，一个 warp 的 32 个 lane 正好访问<b>连续的 512B</b>，无论是本地 load 还是对端 NVLink store，都是完全合并的事务。</p>`,
+      code: `Pack* inpPacks = (Pack*)input.localPtr()
+               + intptr_t(w) * UnrollPacks * WARP_SIZE + lane;
+for (int u = 0; u < UnrollPacks; u++)
+  tmp[u] = inpPacks[u * WARP_SIZE];`,
+      ref: 'src/device/symmetric/all_gather.cuh:23-28, 73-75',
+      moves: [], dur: 0.5,
+      apply: s => { s.iter = 3; s.lane = true; },
+    });
+    out.push({
+      title: '对齐分档：TMA 256B → 16B → 4B → 逐元素',
+      desc: `<p><code>bcast()</code> 先算出 input 与 output 的相对对齐 <code>alignment = input.offset − output.offset</code>，再依次尝试：</p>
+             <p>• <b>256B 对齐 + TMA</b>（SM100+）：16 pack/lane，lane0 用 <code>cp.async.bulk</code>；<br>
+                • <b>16B 对齐</b>：16B pack，4 pack/lane；<br>
+                • <b>4B 对齐</b>：4B pack，UnrollPeers=4；<br>
+                • 剩下的头/尾：<code>bcastEnds</code>，UnrollPeers=8，逐元素处理。</p>
+             <p>host 端的 <code>ncclSymkTmaDeepEligible</code> 会检查消息是否够大，大到值得启用 TMA deep loop。</p>`,
+      code: `uint32_t alignment = uint32_t(input.offset - output.offset);
+if (EnableTma && alignment % 256 == 0) { bcastDeep<16, 16, 2, true>(...); }
+if (alignment % 16 == 0)             { bcastDeep<16,  4, 2, Tma >(...); }
+if (sizeof(T) == 4 || alignment % 4 == 0) { bcastDeep<4, 4, 4, false>(...); }
+if (waitNeeded) bar.wait(...);
+bcastEnds<8>(...);   // prefix + suffix elements`,
+      ref: 'src/device/symmetric/all_gather.cuh:174-246',
+      moves: [], dur: 0.5,
+      apply: s => { s.tier = true; },
+    });
+    return out;
+  }
+  return {
+    id: 'map', tab: 'ST 线程映射', title: 'bcastDeep 的线程 → 数据映射与对齐分档',
+    sub: '多个 block / warp 如何切分一个 rank 的数据',
+    intro: `<p>这一页不画通信，只看<b>一个 rank 的数据怎么分给 CTA 内的 warp/lane</b>。ST、TmaST 和 STMC 用的都是这套思路。</p>
+            <p>例子：nBlocks=3，每 block 4 个 warp，共 12 个 warp；数据切成 36 个 2KB tile。</p>`,
+    nColors: 0, options: [], init, draw, steps,
+  };
+})();
+
+/* =====================================================================
+ * Scene 3: AllGather_STMC  (NVLS multimem store)
+ * ===================================================================== */
+const SceneSTMC = (() => {
+  const W = 300, H = 172;
+  const G = [[40, 30], [660, 30], [660, 420], [40, 420]].map(([x, y]) => ({ x, y }));
+  const SW = { x: 375, y: 238, w: 250, h: 150 };
+  const CX = 82;
+  const inCellXY = (g, c) => [G[g].x + CX + c * 26, G[g].y + 46];
+  const inC = (g, c) => [inCellXY(g, c)[0] + 11, inCellXY(g, c)[1] + 9];
+  const outXY = (g, s, c) => [G[g].x + CX + s * 52 + c * 12, G[g].y + 98];
+  const outC = (g, s, c) => [outXY(g, s, c)[0] + 5.5, outXY(g, s, c)[1] + 9];
+  const colP = c => [SW.x + 28 + c * 52 + 21, SW.y + 92];
+  const swC = [SW.x + SW.w / 2, SW.y + SW.h / 2];
+  const lampP = g => [G[g].x + W - 22, G[g].y + 22];
+  const mult = r => r ^ ((r >> 1) & 1);
+  const port = g => [G[g].x + (g === 0 || g === 3 ? W : 0), G[g].y + H / 2];
+
+  function init() { return { out: grid2(4, 4, () => [null, null, null, null]), bar: Array(4).fill('idle'), hits: null, cur: null, iter: -1 }; }
+
+  function draw(root, st, o) {
+    for (let g = 0; g < 4; g++) {
+      const [px, py] = port(g);
+      S('line', { x1: px, y1: py, x2: swC[0], y2: swC[1], stroke: '#24365a', 'stroke-width': 8, 'stroke-linecap': 'round', opacity: .6 }, root);
+    }
+    box(root, SW.x, SW.y, SW.w, SW.h, { fill: '#18233a', stroke: '#3a5a9a' });
+    T(root, SW.x + SW.w / 2, SW.y + 24, 'NVSwitch · NVLS multicast', 't-title', { 'text-anchor': 'middle' });
+    T(root, SW.x + SW.w / 2, SW.y + 42, '一次 multimem.st → 复制给组内所有 GPU', 't-sm', { 'text-anchor': 'middle' });
+    T(root, SW.x + 14, SW.y + 64, '本轮各 rank 写入的 slot 内 chunk 偏移：', 't-xs');
+    for (let c = 0; c < 4; c++) {
+      const x = SW.x + 28 + c * 52, y = SW.y + 72;
+      const h = st.hits ? st.hits[c] : 0;
+      S('rect', { x, y, width: 42, height: 40, rx: 5, fill: h > 1 ? '#5a1f2a' : h === 1 ? '#173a2c' : '#121a2a', stroke: h > 1 ? '#ff6b6b' : h === 1 ? '#3ddc84' : '#2a3653' }, root);
+      T(root, x + 21, y + 16, `c${c}`, 't-sm', { 'text-anchor': 'middle' });
+      if (st.hits) T(root, x + 21, y + 32, `×${h}`, h > 1 ? 't-bad' : h === 1 ? 't-ok' : 't-xs', { 'text-anchor': 'middle' });
+    }
+    if (st.hits) {
+      const bad = st.hits.some(h => h > 1);
+      T(root, SW.x + SW.w / 2, SW.y + 134, bad ? '多个 rank 同时写同一偏移 → 竞争' : '各 rank 写的偏移互不相同 ✓', bad ? 't-bad' : 't-ok', { 'text-anchor': 'middle' });
+    }
+    for (let g = 0; g < 4; g++) {
+      const { x, y } = G[g];
+      box(root, x, y, W, H);
+      T(root, x + 14, y + 24, `GPU ${g}`, 't-title');
+      T(root, x + 68, y + 24, o.rotate ? `起点 = ${mult(g)}×32MB → chunk c${mult(g) % 4}` : '起点 = 0', 't-xs');
+      const [lx, ly] = lampP(g); lamp(root, lx, ly, st.bar[g]);
+      T(root, x + 14, y + 59, 'input', 't-lbl');
+      for (let c = 0; c < 4; c++) {
+        const [cx, cy] = inCellXY(g, c);
+        const isCur = st.cur && st.cur[g] === c;
+        cell(root, cx, cy, 22, 18, PAL[g], isCur ? { stroke: '#fff', 'stroke-width': 2 } : null);
+        T(root, cx + 11, cy + 12.5, 'c' + c, 't-in', { 'text-anchor': 'middle' });
+      }
+      T(root, x + 14, y + 111, 'output', 't-lbl');
+      for (let s = 0; s < 4; s++) {
+        for (let c = 0; c < 4; c++) {
+          const [cx, cy] = outXY(g, s, c);
+          const v = st.out[g][s][c];
+          cell(root, cx, cy, 11, 18, v == null ? null : PAL[v]);
+        }
+        T(root, outXY(g, s, 0)[0] + 23, y + 132, `R${s}`, 't-sm', { 'text-anchor': 'middle' });
+      }
+      T(root, x + 14, y + H - 14, '每个槽分成 4 个 chunk；同一 multicast 对象被 4 个 rank 并发写', 't-xs');
+    }
+  }
+
+  function steps(o) {
+    const out = [];
+    const sig = [];
+    for (let g = 0; g < 4; g++) for (let h = 0; h < 4; h++) if (g !== h) sig.push({ pts: [lampP(g), swC, lampP(h)], kind: 'sig' });
+    out.push({
+      title: 'bar.sync(acquire)：multimem 版本的 LSA barrier',
+      desc: `<p>STMC 构造 barrier 时传入 <code>multimem=true</code>：barrier 的 flag 本身也通过 multicast 地址更新，一条 <code>multimem.red</code> 就能通知所有 peer。</p>
+             <p>开头直接做完整的 <b>sync</b>，不像 ST 那样拆成 arrive/wait，因为后面没有需要提前发出的 load 可以拿来重叠。</p>`,
+      code: `ncclLsaBarrierSession<ncclCoopCta> bar(ncclCoopCta(), handler.comm,
+        ncclTeamTagLsa(), blockIdx.x, /*multimem=*/true);
+bar.sync(ncclCoopCta(), cuda::memory_order_acquire);`,
+      ref: 'src/device/symmetric/all_gather.cuh:292-295',
+      moves: sig, dur: 0.9,
+      apply: s => s.bar.fill('passed'),
+    });
+    for (let i = 0; i < 4; i++) {
+      const cur = [0, 1, 2, 3].map(g => ((o.rotate ? mult(g) : 0) + i) % 4);
+      const hits = [0, 0, 0, 0]; cur.forEach(c => hits[c]++);
+      const mv = [];
+      for (let g = 0; g < 4; g++) for (let h = 0; h < 4; h++) {
+        mv.push({ pts: [inC(g, cur[g]), colP(cur[g]), outC(h, g, cur[g])], color: PAL[g], w: 12, h: 9 });
+      }
+      out.push({
+        title: `迭代 ${i}：每个 rank 一次 multimem.st，交换机扇出给 4 卡`,
+        desc: `<p>本轮各 rank 写的 chunk：${cur.map((c, g) => `R${g}→c${c}`).join('，')}。</p>
+               <p>每个 rank 只发 <b>1 份</b>数据（<code>multimem_st_global</code> 写到 multicast VA），由 NVSwitch 复制到所有 GPU 的 <code>output[R${'{rank}'}]</code> 槽。GPU 出口流量是 <b>1×nBytes</b>，ST 是 (N−1)×nBytes。</p>
+               <p>${o.rotate ? '起点乘数 <code>rank ^ ((rank>>1)&1)</code> = 0,1,3,2，每个 rank 从 <code>乘数×32MB mod size</code> 开始环形遍历，把<b>并发 MC 操作分散到不同地址</b>，避免竞争。' : '<b>关闭了起点错开</b>：所有 rank 在同一时刻写同一个 chunk 偏移，在交换机上集中竞争（右侧指示为红色）。'}</p>`,
+        code: `uint32_t startOffsetMultiplier = rank ^ ((rank >> 1) & 1);
+size_t startBytes = startOffsetMultiplier * ncclSymkMcPerRankOffsetBytes % nMainBytes;
+...
+while (0 < nIters) {
+  if (cursor >= wrapAt) cursor -= nMainBytes;      // wrap around
+  for (int u = 0; u < UnrollPacks; u++)
+    tmp[u] = *(BytePack<16>*)(inputUptr + cursor + u*WARP_SIZE*16);
+  for (int u = 0; u < UnrollPacks; u++)
+    multimem_st_global(outputUptr + cursor + u*WARP_SIZE*16, tmp[u]);
+  cursor += tn * UnrollPacks * BytePerPack;
+}`,
+        ref: 'src/device/symmetric/primitives.cuh:381-413',
+        moves: mv, dur: 1.4,
+        pre: s => { s.hits = hits; s.cur = cur; s.iter = i; },
+        apply: s => { for (let g = 0; g < 4; g++) for (let h = 0; h < 4; h++) s.out[h][g][cur[g]] = g; },
+      });
+    }
+    out.push({
+      title: 'bar.sync(release)：收尾',
+      desc: `<p>所有 multimem store 完成并可见之后退出。每个 GPU 的 output 已经凑齐 4×4 个 chunk。</p>
+             <p>代价模型里 STMC 的 <code>busMultiplier = 0.55 × nRanks</code>（TmaSTMC 再乘 0.99），所以只要有 NVLS，中大消息基本都会选 STMC。</p>`,
+      code: `bar.sync(ncclCoopCta(), cuda::memory_order_release);`,
+      ref: 'src/device/symmetric/all_gather.cuh:308',
+      moves: sig, dur: 0.9,
+      apply: s => { s.bar.fill('done'); s.hits = null; s.cur = null; },
+    });
+    return out;
+  }
+  return {
+    id: 'stmc', tab: '单机 · STMC', title: 'AllGather_STMC / TmaSTMC：NVLS multicast store',
+    sub: '1 次写 → NVSwitch 复制给所有 GPU；起点按 rank 错开',
+    intro: `<p>前提：节点内支持 <b>NVLS</b>（<code>comm->symkState.hasLsaMultimem</code>）。symmetric 窗口另外映射了一个 <b>multicast VA</b>，对它做 <code>multimem.st</code> 会由 NVSwitch 复制到组内每张卡的同一偏移。</p>
+            <p>可以切换下方"起点错开"选项，对比交换机上的地址竞争。</p>`,
+    nColors: 4,
+    options: [{ key: 'rotate', label: '起点错开 (0,1,3,2 × 32MB)', type: 'check', def: true }],
+    init, draw, steps,
+  };
+})();
+
+/* =====================================================================
+ * Scene 4: AllGather_LL / LLMC  (flag-in-data, no barrier)
+ * ===================================================================== */
+const SceneLL = (() => {
+  const W = 340, H = 235;
+  const G = [[30, 30], [630, 30], [630, 375], [30, 375]].map(([x, y]) => ({ x, y }));
+  const CX = 84;
+  const inXY = (g, p) => [G[g].x + CX + p * 30, G[g].y + 40];
+  const inC = (g, p) => [inXY(g, p)[0] + 13, inXY(g, p)[1] + 9];
+  const bufXY = (g, h, j) => [G[g].x + CX + j * 31, G[g].y + 82 + h * 30];
+  const bufC = (g, h, j) => [bufXY(g, h, j)[0] + 14, bufXY(g, h, j)[1] + 11];
+  const outXY = (g, s, p) => [G[g].x + CX + s * 63 + p * 15, G[g].y + 160];
+  const outC = (g, s, p) => [outXY(g, s, p)[0] + 7, outXY(g, s, p)[1] + 9];
+  const SWC = [500, 330];
+
+  function init() {
+    return {
+      epoch: 6, half: 0, poll: -1, fin: false,
+      buf: [0, 1, 2, 3].map(() => [Array.from({ length: 8 }, () => ({ ep: 4 })), Array.from({ length: 8 }, () => ({ ep: 5 }))]),
+      out: grid2(4, 4, () => [null, null, null, null]),
+    };
+  }
+
+  function draw(root, st, o) {
+    // line-format panel
+    box(root, 385, 40, 230, 132, { fill: '#121a2a' });
+    T(root, 500, 62, 'LL 16B 行格式（st.relaxed.sys.v4）', 't-big', { 'text-anchor': 'middle' });
+    const parts = [['data', '[0:4]', '#4f8cff'], ['flag', 'epoch', '#ffb020'], ['data', '[4:8]', '#4f8cff'], ['flag', 'epoch', '#ffb020']];
+    parts.forEach(([a, b, c], i) => {
+      S('rect', { x: 395 + i * 53, y: 76, width: 50, height: 40, rx: 4, fill: c, 'fill-opacity': .85 }, root);
+      T(root, 395 + i * 53 + 25, 92, a, 't-in', { 'text-anchor': 'middle' });
+      T(root, 395 + i * 53 + 25, 106, b, 't-in', { 'text-anchor': 'middle' });
+    });
+    T(root, 500, 136, '一次 16B 原子写同时带上 8B 数据和 2 个 flag', 't-xs', { 'text-anchor': 'middle' });
+    T(root, 500, 152, '接收方 ld 到 y==epoch && w==epoch 才算到齐', 't-xs', { 'text-anchor': 'middle' });
+
+    if (o.mc) {
+      for (let g = 0; g < 4; g++) S('line', { x1: G[g].x + W / 2, y1: G[g].y + H / 2, x2: SWC[0], y2: SWC[1], stroke: '#24365a', 'stroke-width': 7, opacity: .5 }, root);
+      box(root, 420, 300, 160, 60, { fill: '#18233a', stroke: '#3a5a9a' });
+      T(root, 500, 326, 'NVSwitch', 't-title', { 'text-anchor': 'middle' });
+      T(root, 500, 344, 'multimem.st 扇出', 't-sm', { 'text-anchor': 'middle' });
+    } else {
+      T(root, 500, 330, 'LL：对每个 peer 做一次 P2P st', 't-mute', { 'text-anchor': 'middle' });
+      T(root, 500, 348, '（勾选 LLMC 改为 multicast）', 't-mute', { 'text-anchor': 'middle' });
+    }
+
+    for (let g = 0; g < 4; g++) {
+      const { x, y } = G[g];
+      box(root, x, y, W, H);
+      T(root, x + 14, y + 24, `GPU ${g}`, 't-title');
+      T(root, x + W - 14, y + 24, `epoch=${st.epoch} · 用 ${st.half ? 'odd' : 'even'} 半区`, 't-warn', { 'text-anchor': 'end' });
+      T(root, x + 14, y + 53, 'input', 't-lbl');
+      for (let p = 0; p < 4; p++) {
+        const [cx, cy] = inXY(g, p);
+        cell(root, cx, cy, 26, 18, PAL[g]);
+        T(root, cx + 13, cy + 12.5, 'p' + p, 't-in', { 'text-anchor': 'middle' });
+      }
+      T(root, x + CX + 128, y + 53, '每 epoch 每线程 8B', 't-xs');
+      for (let s = 0; s < 4; s++) T(root, bufXY(g, 0, s * 2)[0] + 29.5, y + 77, `←R${s}→`, 't-xs', { 'text-anchor': 'middle' });
+      ['buf even', 'buf odd'].forEach((lb, h) => {
+        T(root, x + 14, y + 97 + h * 30, lb, h === st.half ? 't-lbl' : 't-sm');
+        if (h === st.half) S('rect', { x: x + CX - 4, y: y + 78 + h * 30, width: 8 * 31 + 5, height: 30, rx: 5, fill: 'none', stroke: '#ffb020', 'stroke-width': 1.2, 'stroke-dasharray': '4 3' }, root);
+        for (let j = 0; j < 8; j++) {
+          const [cx, cy] = bufXY(g, h, j);
+          const v = st.buf[g][h][j];
+          const valid = v.src != null && v.ep === st.epoch;
+          const polled = st.poll === h;
+          cell(root, cx, cy, 28, 22, v.src != null ? PAL[v.src] : '#151c2b',
+            polled ? { stroke: valid ? '#3ddc84' : '#ff6b6b', 'stroke-width': 2 } : (v.src != null && !valid ? { 'fill-opacity': .35 } : null));
+          T(root, cx + 14, cy + 15, `e${v.ep}`, v.src != null ? 't-in' : 't-xs', { 'text-anchor': 'middle' });
+        }
+      });
+      T(root, x + 14, y + 173, 'output', 't-lbl');
+      for (let s = 0; s < 4; s++) {
+        for (let p = 0; p < 4; p++) {
+          const [cx, cy] = outXY(g, s, p);
+          const v = st.out[g][s][p];
+          cell(root, cx, cy, 14, 18, v == null ? null : PAL[v]);
+        }
+        T(root, outXY(g, s, 0)[0] + 29, y + 193, `R${s}`, 't-sm', { 'text-anchor': 'middle' });
+      }
+      T(root, x + 14, y + H - 14, st.fin ? '完成：全程没有任何 barrier' : '槽号 slot = nIterPacks·src + t（nIterPacks=2）', st.fin ? 't-ok' : 't-xs');
+    }
+  }
+
+  function steps(o) {
+    const out = [];
+    const sendStep = (ep, half, base) => {
+      const mv = [];
+      for (let g = 0; g < 4; g++) for (let t = 0; t < 2; t++) for (let h = 0; h < 4; h++) {
+        const to = bufC(h, half, g * 2 + t);
+        mv.push({ pts: o.mc ? [inC(g, base + t), SWC, to] : [inC(g, base + t), to], color: PAL[g], w: 11, h: 8, delay: t * 0.1 });
+      }
+      return {
+        title: `epoch ${ep}：每个线程把 8B 数据 bcast 到所有 peer 的 LL 槽`,
+        desc: `<p>线程 t 读 input 的 pack ${base}+t（8B），调用 <code>lla2a.bcast(slot = nIterPacks·rank + t, x)</code>，写到每个 peer LL buffer 的 <b>${half ? 'odd' : 'even'} 半区</b>（由 <code>epoch & 1</code> 决定）。</p>
+               <p>${o.mc ? '<b>LLMC</b>：对 multicast 地址只做一次 16B store，NVSwitch 复制给所有卡。' : '<b>LL</b>：对每个 peer 各做一次 16B <code>st.relaxed.sys</code>，按 8 个 peer 一组展开。'}</p>
+               <p>flag 字段写的是 <b>${ep}</b>。半区里残留的旧值是 e${ep - 2}，不会被误认为新数据，所以<b>不需要清零，也不需要 barrier</b>。</p>`,
+        code: `if (t < nIterPacks) {
+  Pack x = loadPack<Pack>(input, t * EltPerPack, nElts);
+  lla2a.bcast(/*slot=*/nIterPacks * rank + t, x);
+}
+// bcast(): st.relaxed.sys.v4.u32 [buf], {d0, epoch, d1, epoch}`,
+        ref: 'src/device/symmetric/all_gather.cuh:337-341 · ll_a2a__funcs.h:64-136',
+        moves: mv, dur: 1.3,
+        apply: s => { for (let g = 0; g < 4; g++) for (let t = 0; t < 2; t++) for (let h = 0; h < 4; h++) s.buf[h][half][g * 2 + t] = { src: g, pack: base + t, ep }; },
+      };
+    };
+    const recvStep = (ep, half, base) => {
+      const mv = [];
+      for (let g = 0; g < 4; g++) for (let j = 0; j < 8; j++) {
+        const src = j >> 1, t = j & 1;
+        mv.push({ pts: [bufC(g, half, j), outC(g, src, base + t)], color: PAL[src], w: 9, h: 7, delay: (j % 2) * 0.08 });
+      }
+      return {
+        title: `epoch ${ep}：轮询本地 LL 槽，flag 对上后写进 output`,
+        desc: `<p>接收端只读<b>本地</b> buffer：线程 i 处理槽 i，<code>peer = i / nIterPacks</code>，<code>pack = i % nIterPacks</code>。</p>
+               <p><code>recvUnrolled&lt;4,4&gt;</code> 同时对 4 个槽做 <code>ld.relaxed.sys.v4</code>，<b>两个 flag 都等于 ${ep}</b> 才放行，否则自旋（期间会检查 abortFlag）。绿框表示 flag 已对上。</p>
+               <p>然后 <code>storePack(output + peer·nStrideElts, pack·8)</code> 把数据写到 output 的 R<sub>peer</sub> 槽。</p>`,
+        code: `for (int i = t; i < nRanks * nIterPacks; i += tn) {
+  Pack got = lla2a.recv<Pack>(i);            // spin until flags == epoch
+  storePack(output + peer * nStrideElts, pack * EltPerPack, nElts, got);
+  ...
+}`,
+        ref: 'src/device/symmetric/all_gather.cuh:343-397 · ll_a2a__funcs.h:150-200',
+        moves: mv, dur: 1.0,
+        pre: s => { s.poll = half; },
+        apply: s => { for (let g = 0; g < 4; g++) for (let j = 0; j < 8; j++) s.out[g][j >> 1][base + (j & 1)] = j >> 1; s.poll = -1; },
+      };
+    };
+    out.push(sendStep(6, 0, 0));
+    out.push(recvStep(6, 0, 0));
+    out.push({
+      title: 'endEpoch()：epoch+1，切换到另一半区（双缓冲）',
+      desc: `<p><code>endEpoch</code> 先做一次 CTA 内同步，然后 <code>epoch += 1</code>，<code>slotsOffset</code> 换到另一半区。</p>
+             <p>下一轮写 odd 半区的同时，慢一点的 peer 可能还在读 even 半区，两边互不干扰。只有当 epoch 快要溢出回绕时，才会把 buffer 清零。</p>`,
+      code: `lla2a.endEpoch(ncclCoopCta());
+// epoch += (epoch == -1u) ? 3 : 1;
+// slotsOffset = block*(1+2*nSlots) + 1 + (epoch & 1)*nSlots;`,
+      ref: 'll_a2a__funcs.h:254-267 · ll_a2a__types.h:32',
+      moves: [], dur: 0.5,
+      apply: s => { s.epoch = 7; s.half = 1; },
+    });
+    out.push(sendStep(7, 1, 2));
+    out.push(recvStep(7, 1, 2));
+    out.push({
+      title: '析构：把 epoch 写回 header，kernel 结束',
+      desc: `<p><code>~ncclLLA2ASession</code> 把 <code>epoch − 2</code> 写回 buffer header，下一次 launch 从这里继续，flag 永远不会和残留数据混淆。</p>
+             <p>LL 用一半带宽（flag 占了一半字节，代价模型里的 <code>LL_BusFactor</code>）换来<b>最低延迟</b>：没有 barrier，也没有额外同步，适合小消息。nBusBytes ≥ 2GB 时会禁用 LL（索引是 32 位）。</p>`,
+      code: `~ncclLLA2ASession() {
+  if (coop.thread_rank() == 0) line->x = epoch - 2;
+  coop.sync();
+}`,
+      ref: 'll_a2a__funcs.h:28-35',
+      moves: [], dur: 0.5,
+      apply: s => { s.fin = true; },
+    });
+    return out;
+  }
+  return {
+    id: 'll', tab: '单机 · LL/LLMC', title: 'AllGather_LL / LLMC：flag 内嵌在数据里，无 barrier',
+    sub: '小消息低延迟路径：每 16B 写 8B 数据 + 2 个 epoch flag，双缓冲',
+    intro: `<p>小消息时 barrier 本身（几 µs）比传数据还贵。LL 把同步标志<b>嵌进数据里</b>：每个 16B 写里带 8B 数据和两份 epoch。</p>
+            <p>每个 GPU 有一块 LL buffer（每 block 一份），分成 even/odd 两个半区。演示中消息为每 rank 4 个 pack，每个 epoch 传 2 个，共 2 个 epoch。</p>`,
+    nColors: 4,
+    options: [{ key: 'mc', label: 'LLMC（multicast）', type: 'check', def: false }],
+    init, draw, steps,
+  };
+})();
+
+/* =====================================================================
+ * Scene 5: AllGather_RailRing_LsaSTMC (multi-node)
+ * ===================================================================== */
+const SceneRail = (() => {
+  const N = 3, L = 4, C = 2;
+  const W = 190, GH = 124;
+  const NODE = n => ({ x: 10, y: 14 + n * 208, w: 980, h: 192 });
+  const GP = (n, l) => ({ x: 92 + l * 225, y: NODE(n).y + 28 });
+  const SWY = n => NODE(n).y + 162;
+  const rank = (n, l) => n * L + l;
+  const inXY = (n, l, c) => [GP(n, l).x + 30 + c * 14, GP(n, l).y + 26];
+  const inC = (n, l, c) => [inXY(n, l, c)[0] + 6, inXY(n, l, c)[1] + 6];
+  const outXY = (n, l, s, c) => [GP(n, l).x + 30 + s * 13 + Math.floor(s / L) * 2, GP(n, l).y + 46 + c * 14];
+  const outC = (n, l, s, c) => [outXY(n, l, s, c)[0] + 6, outXY(n, l, s, c)[1] + 6];
+  const gx = (n, l) => GP(n, l).x;
+
+  // route for a GIN put between rail neighbours
+  function putRoute(n, l, from, to) {
+    const nn = (n + 1) % N;
+    if (nn > n) { // forward: right-hand gap, going down
+      const X = gx(n, l) + W + 15;
+      return [from, [gx(n, l) + W, from[1]], [X, from[1]], [X, to[1]], [gx(nn, l) + W, to[1]], to];
+    }
+    const X = gx(n, l) - 15; // wrap: left-hand gap, going up
+    return [from, [gx(n, l), from[1]], [X, from[1]], [X, to[1]], [gx(nn, l), to[1]], to];
+  }
+  function mcRoute(n, l, l2, from, to) {
+    const b = GP(n, l).y + GH, sy = SWY(n) + 10;
+    const x1 = gx(n, l) + W / 2, x2 = gx(n, l2) + W / 2;
+    return [from, [x1, b], [x1, sy], [x2, sy], [x2, b], to];
+  }
+
+  function simulate() {
+    const ring = [], mc = [];
+    for (let n = 0; n < N; n++) for (let l = 0; l < L; l++) {
+      const r = [], m = [];
+      for (let s = 0; s < N - 1; s++) for (let c = 0; c < C; c++) r.push({ s, c, d: (n - s + N) % N });
+      for (let s = 0; s < N; s++) for (let c = 0; c < C; c++) m.push({ s, c, d: (n - s + N) % N });
+      ring.push(r); mc.push(m);
+    }
+    const arrived = new Set();
+    const key = (n, l, d, c) => `${n},${l},${d},${c}`;
+    const pr = Array(N * L).fill(0), pm = Array(N * L).fill(0);
+    const ticks = [];
+    for (let guard = 0; guard < 64; guard++) {
+      const ops = [];
+      for (let n = 0; n < N; n++) for (let l = 0; l < L; l++) {
+        const i = n * L + l;
+        const ro = ring[i][pr[i]];
+        if (ro && (ro.s === 0 || arrived.has(key(n, l, ro.d, ro.c)))) { ops.push(Object.assign({ type: 'put', n, l }, ro)); pr[i]++; }
+        const mo = mc[i][pm[i]];
+        if (mo && (mo.s === 0 || arrived.has(key(n, l, mo.d, mo.c)))) { ops.push(Object.assign({ type: 'mc', n, l }, mo)); pm[i]++; }
+      }
+      if (!ops.length) break;
+      ticks.push({ ops, ringDone: pr.map(p => p >= (N - 1) * C), mcDone: pm.map(p => p >= N * C) });
+      ops.filter(o => o.type === 'put').forEach(o => arrived.add(key((o.n + 1) % N, o.l, o.d, o.c)));
+    }
+    return ticks;
+  }
+  const TICKS = simulate();
+
+  function init() {
+    return {
+      out: [...Array(N)].map(() => [...Array(L)].map(() => grid2(N * L, C, () => null))),
+      sig: [...Array(N)].map(() => Array(L).fill(0)),
+      ringTxt: [...Array(N)].map(() => Array(L).fill('ring warp: —')),
+      mcTxt: [...Array(N)].map(() => Array(L).fill('bcast warps: —')),
+      bar: 'idle', tick: 0,
+    };
+  }
+
+  function draw(root, st, o) {
+    const focus = o.focus === 'all' ? -1 : +o.focus;
+    // rail links (static)
+    for (let l = 0; l < L; l++) {
+      const dim = focus >= 0 && focus !== l;
+      const op = dim ? 0.12 : 0.55;
+      for (let n = 0; n < N - 1; n++) {
+        const X = gx(n, l) + W + 15;
+        S('path', { d: `M${X},${GP(n, l).y + 60} L${X},${GP(n + 1, l).y + 60}`, stroke: PAL[l], 'stroke-width': 2, 'stroke-dasharray': '5 4', fill: 'none', opacity: op, 'marker-end': 'url(#arr)' }, root);
+      }
+      const X = gx(0, l) - 15;
+      S('path', { d: `M${X},${GP(N - 1, l).y + 60} L${X},${GP(0, l).y + 60}`, stroke: PAL[l], 'stroke-width': 2, 'stroke-dasharray': '2 4', fill: 'none', opacity: op, 'marker-end': 'url(#arr)' }, root);
+    }
+    for (let n = 0; n < N; n++) {
+      const nd = NODE(n);
+      S('rect', { x: nd.x, y: nd.y, width: nd.w, height: nd.h, rx: 12, fill: 'rgba(30,40,62,.28)', stroke: '#26324d', 'stroke-dasharray': '6 4' }, root);
+      T(root, nd.x + 14, nd.y + 19, `Node ${n}`, 't-big');
+      T(root, nd.x + 80, nd.y + 19, `rail.rank = ${n} · LSA team = {R${rank(n, 0)}..R${rank(n, L - 1)}}`, 't-sm');
+      S('rect', { x: 92, y: SWY(n), width: 3 * 225 + W, height: 20, rx: 6, fill: '#1a2742', stroke: '#3a5a9a' }, root);
+      T(root, 92 + (3 * 225 + W) / 2, SWY(n) + 14, 'NVSwitch · NVLS multicast（节点内）', 't-sm', { 'text-anchor': 'middle' });
+      for (let l = 0; l < L; l++) {
+        const { x, y } = GP(n, l);
+        const dim = focus >= 0 && focus !== l;
+        const g = S('g', { opacity: dim ? 0.3 : 1 }, root);
+        box(g, x, y, W, GH, { stroke: st.bar === 'passed' ? '#2f6b4a' : st.bar === 'done' ? '#2e5aa8' : '#2a3653' });
+        T(g, x + 8, y + 16, `R${rank(n, l)}`, 't-title');
+        T(g, x + 40, y + 16, `lsa${l} · rail${l}`, 't-xs');
+        T(g, x + W - 8, y + 16, `sig[prev]=${st.sig[n][l]}`, 't-warn', { 'text-anchor': 'end' });
+        T(g, x + 8, y + 35, 'in', 't-sm');
+        for (let c = 0; c < C; c++) { const [cx, cy] = inXY(n, l, c); cell(g, cx, cy, 12, 12, PAL[rank(n, l)]); }
+        T(g, x + 62, y + 35, '← 2 个 1MB chunk', 't-xs');
+        T(g, x + 8, y + 62, 'out', 't-sm');
+        for (let s = 0; s < N * L; s++) for (let c = 0; c < C; c++) {
+          const [cx, cy] = outXY(n, l, s, c);
+          const v = st.out[n][l][s][c];
+          cell(g, cx, cy, 12, 12, v == null ? null : PAL[v], s === rank(n, l) ? { stroke: '#ffffff88' } : null);
+        }
+        for (let k = 0; k < N; k++) T(g, outXY(n, l, k * L, 0)[0] + 25, y + 85, `N${k}: R${k * L}-${k * L + L - 1}`, 't-xs', { 'text-anchor': 'middle' });
+        T(g, x + 8, y + 102, st.ringTxt[n][l], 't-status');
+        T(g, x + 8, y + 116, st.mcTxt[n][l], 't-status');
+      }
+    }
+  }
+
+  function steps(o) {
+    const focus = o.focus === 'all' ? -1 : +o.focus;
+    const fade = l => (focus >= 0 && focus !== l ? 0.07 : 1);
+    const out = [];
+    const bar = [];
+    for (let n = 0; n < N; n++) for (let l = 0; l < L; l++) {
+      const a = [gx(n, l) + W / 2, GP(n, l).y + GH];
+      bar.push({ pts: [a, [a[0], SWY(n) + 10], [92 + (3 * 225 + W) / 2, SWY(n) + 10]], kind: 'sig', opacity: fade(l) });
+      const nn = (n + 1) % N;
+      const from = [gx(n, l) + (nn > n ? W : 0), GP(n, l).y + 60];
+      const to = [gx(nn, l) + (nn > n ? W : 0), GP(nn, l).y + 60];
+      const X = nn > n ? gx(n, l) + W + 15 : gx(n, l) - 15;
+      bar.push({ pts: [from, [X, from[1]], [X, to[1]], to], kind: 'sig', opacity: fade(l) });
+    }
+    out.push({
+      title: 'world barrier（acquire）= LSA multimem barrier + rail GIN barrier',
+      desc: `<p>world 团队的 <code>ncclBarrierSession</code> 由两层组成：节点内走 <b>LSA barrier（multimem）</b>，节点间沿 <b>rail team</b> 走 GIN barrier（RDMA 信号）。</p>
+             <p>只有全世界的 rank 都进入 kernel 后，才能往别人的 output 里写。<code>ncclGinFenceLevel::None</code>：这里不需要额外的网络 fence。</p>
+             <p>rail team：<code>nRanks = nRanks/lsaSize</code>、<code>rank = worldRank/lsaSize</code>、<code>stride = lsaSize</code>，即各节点中 lsaRank 相同的 GPU。图中每种颜色的虚线就是一条 rail ring（${N} 节点）。</p>`,
+      code: `ncclTeam rail = ncclTeamRail(handler.comm);
+ncclGin gin(handler.comm, blockIdx.x % handler.comm.ginContextCount);
+ncclBarrierSession<ncclCoopCta> bar(cta, ncclTeamTagWorld(), gin,
+                                    blockIdx.x, /*multimem=*/true);
+int nextPeer = (rail.rank + 1) % rail.nRanks;
+int prevPeer = (rail.rank + rail.nRanks - 1) % rail.nRanks;
+bar.sync(cta, cuda::memory_order_acquire, ncclGinFenceLevel::None);`,
+      ref: 'src/device/symmetric/all_gather_gin.cuh:16-29',
+      moves: bar, dur: 1.0,
+      apply: s => { s.bar = 'passed'; },
+    });
+
+    TICKS.forEach((tk, ti) => {
+      const mv = [];
+      tk.ops.forEach(op => {
+        const dg = op.d * L + op.l;
+        const from = op.s === 0 ? inC(op.n, op.l, op.c) : outC(op.n, op.l, dg, op.c);
+        if (op.type === 'put') {
+          const nn = (op.n + 1) % N;
+          mv.push({ pts: putRoute(op.n, op.l, from, outC(nn, op.l, dg, op.c)), color: PAL[dg], w: 11, h: 8, opacity: fade(op.l) });
+        } else {
+          for (let l2 = 0; l2 < L; l2++) mv.push({ pts: mcRoute(op.n, op.l, l2, from, outC(op.n, l2, dg, op.c)), color: PAL[dg], w: 9, h: 7, opacity: fade(op.l) });
+        }
+      });
+      const rOp = tk.ops.find(x => x.type === 'put' && x.n === 0 && x.l === 0);
+      const mOp = tk.ops.find(x => x.type === 'mc' && x.n === 0 && x.l === 0);
+      const ex = [];
+      if (rOp) ex.push(`<b>ring warp</b>（step ${rOp.s}, chunk ${rOp.c}）：R0 把 <b>R${rOp.d * L}</b> 的 chunk${rOp.c} ${rOp.s === 0 ? '从自己的 input' : '从自己的 output（上一跳刚送到）'}用 <code>gin.put</code> 写进 <b>R${L}</b>（下一节点同 lsaRank）的 <code>output[R${rOp.d * L}]</code>，并在对端 <code>railSignals[0]</code> 上 <code>SignalInc</code>。${rOp.s > 0 ? '发之前先 <code>waitSignal(railSignals[prev] ≥ v+1)</code>。' : ''}`);
+      else ex.push(`<b>ring warp</b>：${tk.ringDone[0] ? '已发完 (nNodes−1)×chunks 次 put，执行 <code>gin.flush</code>。' : '等待 signal。'}`);
+      if (mOp) ex.push(`<b>bcast warps</b>（step ${mOp.s}, chunk ${mOp.c}）：R0 用 <code>bcastMultimem</code> 把 <b>R${mOp.d * L}</b> 的 chunk${mOp.c} 广播到 Node0 四张卡的 <code>output[R${mOp.d * L}]</code>。`);
+      else ex.push('<b>bcast warps</b>：已全部完成。');
+      const note = ti === 2 ? '<p>💡 ring 的 step 1 所需的 chunk0 早在 tick 1 就到了，所以<b>不用等待</b>：网络转发和节点内 multicast 在 chunk 粒度上<b>流水重叠</b>。</p>'
+        : ti === TICKS.length - 1 ? '<p>💡 最后一步只剩 multicast：从 prev 收到的最后一份数据（来自 2 跳之外）不需要再转发，因为它的下一跳就是数据的源节点。</p>'
+        : ti === 0 ? '<p>💡 tick 1 里所有 12 张卡同时动作：4 条 rail 各跑自己的 ring，用各自的 NIC；各节点内 4 张卡同时做 multicast。</p>' : '';
+      out.push({
+        title: `tick ${ti + 1}：${tk.ops.some(x => x.type === 'put') ? 'GIN put（rail ring）' : ''}${tk.ops.some(x => x.type === 'put') && tk.ops.some(x => x.type === 'mc') ? ' ∥ ' : ''}${tk.ops.some(x => x.type === 'mc') ? 'multimem 广播（节点内）' : ''}`,
+        desc: `<p>以 Rail 0 上的 R0 为例（其他 GPU 对称地做同样的事）：</p><p>${ex.join('</p><p>')}</p>${note}`,
+        code: ti === 0 ? `// warp 0 (ring), step 0: own data
+gin.put(rail, nextPeer, output + dgrank*nAllElts + offset, input + offset,
+        chunkElts, ncclGin_SignalInc{railSignals + rail.rank}, ncclGin_None{}, warps);
+// warps 1.. (bcast), step 0: own data
+bcastMultimem(handler, warps.num_threads(), warps.thread_rank(),
+              input + offset, output + dgrank*nAllElts + offset, chunkElts);`
+          : `// warp 0 (ring), step s>0: forward what prev delivered
+gin.waitSignal(warps, railSignals + prevPeer, localSignalValue + 1, 32);
+gin.put(rail, nextPeer, output + dgrank*nAllElts + offset,
+        output + dgrank*nAllElts + offset, chunkElts,
+        ncclGin_SignalInc{railSignals + rail.rank}, ncclGin_None{}, warps);
+// warps 1.. (bcast), step s>0: same signal, multicast to the node
+gin.waitSignal(warps, railSignals + prevPeer, localSignalValue + 1, 32);
+bcastMultimem(handler, ..., output + dgrank*nAllElts + offset,
+              output + dgrank*nAllElts + offset, chunkElts);
+localSignalValue++;`,
+        ref: 'src/device/symmetric/all_gather_gin.cuh:44-100',
+        moves: mv, dur: 1.6,
+        pre: s => {
+          s.tick = ti + 1;
+          for (let n = 0; n < N; n++) for (let l = 0; l < L; l++) {
+            const i = n * L + l;
+            const r = tk.ops.find(x => x.type === 'put' && x.n === n && x.l === l);
+            const m = tk.ops.find(x => x.type === 'mc' && x.n === n && x.l === l);
+            s.ringTxt[n][l] = r ? `ring: put R${r.d * L + l}.c${r.c}→R${rank((n + 1) % N, l)}` : (tk.ringDone[i] ? 'ring: done → gin.flush' : 'ring: waitSignal…');
+            s.mcTxt[n][l] = m ? `mc  : R${m.d * L + l}.c${m.c} → node` : (tk.mcDone[i] ? 'mc  : done' : 'mc  : waitSignal…');
+          }
+        },
+        apply: s => {
+          tk.ops.forEach(op => {
+            const dg = op.d * L + op.l;
+            if (op.type === 'put') { const nn = (op.n + 1) % N; s.out[nn][op.l][dg][op.c] = dg; s.sig[nn][op.l]++; }
+            else for (let l2 = 0; l2 < L; l2++) s.out[op.n][l2][dg][op.c] = dg;
+          });
+        },
+      });
+    });
+
+    out.push({
+      title: 'gin.flush + 保存 signal shadow + world barrier（release）',
+      desc: `<p>ring warp 用 <code>gin.flush</code> 确保自己发出的 put 都已在本地完成；<code>threadIdx.x == 32</code> 的线程把 <code>localSignalValue</code> 写回 signal shadow，<b>signal 是单调计数器</b>，下次 launch 从这个值继续，不需要清零。</p>
+             <p>最后一次 world barrier（release）保证所有 RDMA 写和 multicast 写都已可见。此时 12 张卡的 output 都已凑齐 R0..R11。</p>
+             <p>代价模型：<code>time = steps·ginLat + max(nBytes·nRanks/lsaBw, nBytes·(nNodes−1)/ginBw)</code>，其中 steps = ⌈nBytes/1MB⌉·(nNodes−1)。CTA 数上限为 ⌈(SM&lt;100 ? 16 : 32)/nvlsHeads⌉。</p>`,
+      code: `gin.flush(warps);
+...
+if (threadIdx.x == ringThreads) *localSignalPtr = localSignalValue;
+bar.sync(cta, cuda::memory_order_release, ncclGinFenceLevel::None);`,
+      ref: 'src/device/symmetric/all_gather_gin.cuh:71, 104-109 · src/tuning/sym_model/gin.cc:115-126',
+      moves: bar, dur: 1.0,
+      pre: s => { for (let n = 0; n < N; n++) for (let l = 0; l < L; l++) { s.ringTxt[n][l] = 'ring: flushed'; s.mcTxt[n][l] = 'mc  : done'; } },
+      apply: s => { s.bar = 'done'; },
+    });
+    return out;
+  }
+
+  return {
+    id: 'rail', tab: '多机 · RailRing', title: 'AllGather_RailRing_LsaSTMC：节点间 Rail Ring（GIN）+ 节点内 NVLS multicast',
+    sub: `${N} 节点 × ${L} GPU，每 rank 数据 = ${C} 个 1MB chunk；颜色 = 数据来源 world rank`,
+    intro: `<p>当 LSA team 不能覆盖所有 rank（<code>ncclTeamLsa(comm).nRanks &lt; comm->nRanks</code>）时，只允许 GIN 内核，AllGather 唯一的选项就是这个。</p>
+            <p><b>每个 CTA 内的分工</b>：warp 0 是 <b>ring warp</b>，沿 rail 用 GIN RDMA put 逐 chunk 转发；其余 warp 是 <b>bcast warps</b>，把每个到达的 chunk 用 multimem.st 广播到本节点所有 GPU。两者都等待同一个 signal 计数器。</p>
+            <p>GIN put 会<b>直接写到下一跳 output 的最终位置</b>（symmetric 内存的好处），转发时再以 output 为源 put 出去，不需要中转 buffer。</p>
+            <p>可以用下方"聚焦 rail"只看一条 ring。</p>`,
+    nColors: 12,
+    options: [{ key: 'focus', label: '聚焦 rail', type: 'select', values: [['all', '全部'], ['0', 'Rail 0'], ['1', 'Rail 1'], ['2', 'Rail 2'], ['3', 'Rail 3']], def: 'all', keepStep: true }],
+    init, draw, steps,
+  };
+})();
+
+/* =====================================================================
+ * Player engine
+ * ===================================================================== */
+const SCENES = [SceneST, SceneMap, SceneSTMC, SceneLL, SceneRail];
+const svg = document.getElementById('svg');
+const defs = S('defs', null, svg);
+defs.innerHTML = `
+  <filter id="glow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="2.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <marker id="arr" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#8aa0c8"/></marker>`;
+const gStatic = S('g', null, svg);
+const gPk = S('g', null, svg);
+
+const app = { scene: null, opts: {}, steps: [], k: 0, playing: false, anim: null, timer: null, speed: 1 };
+
+function stateAt(k) {
+  const st = app.scene.init(app.opts);
+  for (let i = 0; i < k; i++) { const s = app.steps[i]; if (s.pre) s.pre(st); if (s.apply) s.apply(st); }
+  return st;
+}
+function draw(st) { gStatic.innerHTML = ''; app.scene.draw(gStatic, st, app.opts); }
+
+function polyLens(pts) { const L = [0]; for (let i = 1; i < pts.length; i++) L.push(L[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])); return L; }
+function posAt(pts, L, p) {
+  const total = L[L.length - 1]; if (total === 0) return pts[0];
+  const d = p * total; let i = 1; while (i < L.length - 1 && L[i] < d) i++;
+  const seg = L[i] - L[i - 1] || 1, f = (d - L[i - 1]) / seg;
+  return [pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * f, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * f];
+}
+const ease = t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+
+function runAnim(moves, durScale, done) {
+  gPk.innerHTML = '';
+  const D = 1150 * (durScale || 1) / app.speed;
+  const items = moves.map(m => {
+    const L = polyLens(m.pts);
+    let e;
+    if (m.kind === 'sig') e = S('circle', { r: 3.6, fill: '#e8eefc', filter: 'url(#glow)', opacity: m.opacity == null ? .9 : m.opacity }, gPk);
+    else {
+      const w = m.w || 14, h = m.h || 9;
+      e = S('rect', { width: w, height: h, x: -w / 2, y: -h / 2, rx: 2.5, fill: m.color, stroke: '#fff', 'stroke-width': .8, filter: 'url(#glow)', opacity: m.opacity == null ? 1 : m.opacity }, gPk);
+    }
+    if (m.opacity != null && m.opacity < 0.5 && m.kind !== 'sig') e.removeAttribute('filter');
+    return { m, L, e };
+  });
+  const t0 = performance.now();
+  const anim = { raf: 0, done: null };
+  const finish = () => { cancelAnimationFrame(anim.raf); app.anim = null; gPk.innerHTML = ''; done(); };
+  anim.done = finish;
+  const frame = now => {
+    const t = Math.min(1, (now - t0) / D);
+    for (const it of items) {
+      const dl = it.m.delay || 0;
+      const p = ease(Math.max(0, Math.min(1, (t - dl) / (1 - dl))));
+      const [x, y] = posAt(it.m.pts, it.L, p);
+      if (it.m.kind === 'sig') { it.e.setAttribute('cx', x); it.e.setAttribute('cy', y); }
+      else it.e.setAttribute('transform', `translate(${x},${y})`);
+    }
+    if (t >= 1) finish(); else anim.raf = requestAnimationFrame(frame);
+  };
+  app.anim = anim;
+  anim.raf = requestAnimationFrame(frame);
+}
+function stopAnim() {
+  if (app.anim) { cancelAnimationFrame(app.anim.raf); app.anim = null; }
+  clearTimeout(app.timer); gPk.innerHTML = '';
+}
+function goto(k) {
+  stopAnim();
+  app.k = Math.max(0, Math.min(k, app.steps.length));
+  draw(stateAt(app.k));
+  panel(app.k - 1);
+}
+function next() {
+  if (app.anim) { app.anim.done(); return; }
+  clearTimeout(app.timer);
+  if (app.k >= app.steps.length) { setPlaying(false); return; }
+  const step = app.steps[app.k];
+  const st = stateAt(app.k);
+  if (step.pre) step.pre(st);
+  draw(st);
+  panel(app.k);
+  runAnim(step.moves || [], step.dur, () => {
+    if (step.apply) step.apply(st);
+    app.k++;
+    draw(st);
+    panel(app.k - 1);
+    if (app.playing) {
+      if (app.k >= app.steps.length) setPlaying(false);
+      else app.timer = setTimeout(next, 500 / app.speed);
+    }
+  });
+}
+function setPlaying(p) {
+  app.playing = p;
+  document.getElementById('bPlay').textContent = p ? '⏸ 暂停' : (app.k >= app.steps.length ? '↺ 重播' : '▶ 播放');
+  if (p) {
+    if (app.k >= app.steps.length) goto(0);
+    if (!app.anim) next();
+  } else clearTimeout(app.timer);
+}
+
+function panel(i) {
+  const n = app.steps.length;
+  const idx = document.getElementById('stepIdx'), ti = document.getElementById('stepTitle'),
+        de = document.getElementById('stepDesc'), co = document.getElementById('stepCode'), rf = document.getElementById('stepRef');
+  if (i < 0) {
+    idx.textContent = '概览'; ti.textContent = app.scene.title; de.innerHTML = app.scene.intro;
+    co.style.display = 'none'; rf.textContent = '';
+  } else {
+    const s = app.steps[i];
+    idx.textContent = `步骤 ${i + 1} / ${n}`; ti.textContent = s.title; de.innerHTML = s.desc;
+    co.style.display = s.code ? '' : 'none'; co.innerHTML = s.code ? hl(s.code) : ''; rf.textContent = s.ref ? '📄 ' + s.ref : '';
+  }
+  document.querySelectorAll('#stepList li').forEach((li, j) => {
+    li.className = j === i ? 'cur' : j < i ? 'done' : '';
+  });
+  const ul = document.getElementById('stepList'), cur = ul.querySelector('li.cur');
+  if (cur && ul.scrollHeight > ul.clientHeight + 1) { // scroll inside the list only, never the page
+    if (cur.offsetTop < ul.scrollTop) ul.scrollTop = cur.offsetTop - 8;
+    else if (cur.offsetTop + cur.offsetHeight > ul.scrollTop + ul.clientHeight) ul.scrollTop = cur.offsetTop + cur.offsetHeight - ul.clientHeight + 8;
+  }
+  document.getElementById('progress').textContent = `${Math.max(0, app.k)} / ${n}`;
+  if (!app.playing) document.getElementById('bPlay').textContent = app.k >= n ? '↺ 重播' : '▶ 播放';
+}
+
+function buildSteps(keepK) {
+  app.steps = app.scene.steps(app.opts);
+  const ul = document.getElementById('stepList'); ul.innerHTML = '';
+  app.steps.forEach((s, i) => {
+    const li = document.createElement('li'); li.innerHTML = s.title.replace(/\((relaxed|acquire|release)\)/g, '<code>$1</code>');
+    li.onclick = () => { setPlaying(false); goto(i + 1); };
+    ul.appendChild(li);
+  });
+  goto(keepK ? Math.min(app.k, app.steps.length) : 0);
+}
+
+function loadScene(id) {
+  setPlaying(false); stopAnim();
+  app.scene = SCENES.find(s => s.id === id);
+  app.opts = {}; app.scene.options.forEach(o => { app.opts[o.key] = o.def; });
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.id === id));
+  document.getElementById('sceneTitle').textContent = app.scene.title;
+  document.getElementById('sceneSub').textContent = app.scene.sub;
+  // options
+  const od = document.getElementById('opts'); od.innerHTML = '';
+  app.scene.options.forEach(o => {
+    const lb = document.createElement('label');
+    if (o.type === 'check') {
+      const inp = document.createElement('input'); inp.type = 'checkbox'; inp.checked = o.def;
+      inp.onchange = () => { app.opts[o.key] = inp.checked; setPlaying(false); buildSteps(!!o.keepStep); };
+      lb.append(inp, document.createTextNode(o.label));
+    } else {
+      const sel = document.createElement('select');
+      o.values.forEach(([v, t]) => { const op = document.createElement('option'); op.value = v; op.textContent = t; sel.appendChild(op); });
+      sel.value = o.def;
+      sel.onchange = () => { app.opts[o.key] = sel.value; setPlaying(false); buildSteps(!!o.keepStep); };
+      lb.append(document.createTextNode(o.label + ' '), sel);
+    }
+    od.appendChild(lb);
+  });
+  // legend
+  const lg = document.getElementById('legend'); lg.innerHTML = '';
+  if (app.scene.nColors) {
+    for (let r = 0; r < app.scene.nColors; r++) lg.insertAdjacentHTML('beforeend', `<span><i style="background:${PAL[r]}"></i>R${r}</span>`);
+    lg.insertAdjacentHTML('beforeend', '<span><i style="background:#e8eefc;border-radius:50%"></i>同步信号</span>');
+    lg.style.display = '';
+  } else lg.style.display = 'none';
+  buildSteps(false);
+  location.hash = id;
+}
+
+// tabs & controls
+const tabs = document.getElementById('tabs');
+SCENES.forEach(s => {
+  const b = document.createElement('button'); b.className = 'tab'; b.textContent = s.tab; b.dataset.id = s.id;
+  b.onclick = () => loadScene(s.id); tabs.appendChild(b);
+});
+document.getElementById('bPlay').onclick = () => setPlaying(!app.playing);
+document.getElementById('bNext').onclick = () => { setPlaying(false); next(); };
+document.getElementById('bPrev').onclick = () => { setPlaying(false); goto(app.k - (app.anim ? 0 : 1)); };
+document.getElementById('bReset').onclick = () => { setPlaying(false); goto(0); };
+const sp = document.getElementById('speed');
+sp.oninput = () => { app.speed = +sp.value; document.getElementById('speedV').textContent = app.speed.toFixed(2).replace(/0$/, '') + '×'; };
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); setPlaying(!app.playing); }
+  else if (e.code === 'ArrowRight') { setPlaying(false); next(); }
+  else if (e.code === 'ArrowLeft') { setPlaying(false); goto(app.k - (app.anim ? 0 : 1)); }
+  else if (e.code === 'Home') { setPlaying(false); goto(0); }
+});
+loadScene((location.hash || '').slice(1) && SCENES.some(s => s.id === location.hash.slice(1)) ? location.hash.slice(1) : 'st');
+</script>
+</body>
+</html>
